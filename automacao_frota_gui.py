@@ -1,373 +1,1059 @@
 """
 ========================================================================================
-Aplicativo GUI Profissional: Consulta de Frota - Detran/Sefaz CE (v2.0)
+Aplicativo GUI Profissional: Consulta de Frota - Detran/Sefaz CE (Versão 2.1)
 ========================================================================================
-Interface Gráfica com foco em Experiência do Usuário (UI/UX) para terceiros:
-- Pré-visualização da planilha carregada em grade interativa (Treeview).
-- Atualização em tempo real das consultas com cores por situação de débito.
-- Métricas e Dashboard de totais financeiros (Licenciamento, IPVA e Total Geral).
-- Botões pós-processamento: "Abrir Planilha no Excel" e "Abrir Pasta de Destino".
-- Otimização de velocidade: detecção precoce de veículos sem débitos (sem espera inútil).
-- Controle de cancelamento limpo ("Parar Consulta") e proteção contra cliques duplos.
-- Threading dedicada para interface 100% fluida e responsiva.
+Sistema corporativo de automação e web scraping com Interface Gráfica nativa (Tkinter),
+resiliência dinâmica de dados (Pandas), extração de Licenciamento, IPVA e Multas,
+e geração de relatórios executivos em Excel (.xlsx) e PDF Paisagem (.pdf).
+
+Melhorias da Versão 2.1:
+1. Prevenção de Falsos Negativos: diferenciação clara entre veículos regulares (R$ 0,00)
+   e erros/timeouts de conexão (status 'Falha na Consulta' destacado na interface).
+2. Proteção contra Arquivo Excel/PDF Aberto (PermissionError): detecção de bloqueio e
+   salvamento automático com timestamp para evitar perda de dados.
+3. Garantia de 11 Dígitos no RENAVAM: preenchimento automático de zeros à esquerda (zfill).
+4. Sanitização e Validação Prévia: remoção de linhas em branco e validação de padrão
+   de placas (Mercosul e Tradicional) antes de iniciar as consultas.
+5. Salvamento Incremental (Checkpoint): gravação contínua do progresso para proteger
+   contra quedas de energia, cancelamentos prematuros ou falhas de rede.
+6. Pasta de Destino Personalizada: botão e seletor para definir onde salvar os relatórios.
+7. Reconsulta Inteligente: menu de contexto e botão rápido para reprocessar apenas
+   veículos selecionados ou que apresentaram falha/timeout transitório.
 ========================================================================================
 """
 
 import os
 import sys
+import re
 import time
 import subprocess
 import threading
 from datetime import datetime
 import pandas as pd
 
+# Manipulação e Formatação Excel
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl import load_workbook
 
+# Geração de PDF Executivo em Paisagem (ReportLab)
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib import colors
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.pdfgen import canvas
+
+# Interface Gráfica
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+# Automação Web (Selenium)
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
 
 
+# Padrão oficial de placas veiculares brasileiras (Mercosul e Tradicional)
+PADRAO_PLACA = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$|^[A-Z]{3}[0-9]{4}$")
+
+
 # ======================================================================================
-# MOTOR DE SCRAPING OTIMIZADO (SELENIUM / DETRAN-CE / SEFAZ-CE)
+# SUPRESSÃO DE CONSOLE NO WINDOWS
 # ======================================================================================
 
-def configurar_driver(headless: bool = True) -> webdriver.Chrome:
-    """Inicializa o Chrome WebDriver com parâmetros otimizados e silenciosos."""
-    chrome_options = Options()
-    if headless:
-        chrome_options.add_argument("--headless=new")
-
-    chrome_options.add_argument("--start-maximized")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument("--log-level=3")
-    chrome_options.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    )
-
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    return driver
-
-
-def clicar_elemento_seguro(driver: webdriver.Chrome, elemento) -> None:
-    """Executa o clique com scrollIntoView e fallback JavaScript para evitar interceptações de UI."""
-    try:
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elemento)
-        elemento.click()
-    except Exception:
-        driver.execute_script("arguments[0].click();", elemento)
-
-
-def consultar_detran(driver: webdriver.Chrome, wait: WebDriverWait, placa: str, renavam: str) -> str:
-    """Consulta o valor do Licenciamento no Detran-CE com fallback gracioso."""
-    url_detran = "https://sistemas.detran.ce.gov.br/central/#veiculo"
-    try:
-        driver.get(url_detran)
-
-        # 1. Clica no menu lateral 'Licenciamento'
-        menu_lic = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Licenciamento')]")))
-        clicar_elemento_seguro(driver, menu_lic)
-
-        # 2. Localiza inputs visíveis (0: Placa, 1: Renavam)
-        wait.until(lambda d: len([i for i in d.find_elements(By.TAG_NAME, "input") if i.is_displayed()]) >= 2)
-        inputs_visiveis = [i for i in driver.find_elements(By.TAG_NAME, "input") if i.is_displayed()]
-
-        inputs_visiveis[0].clear()
-        inputs_visiveis[0].send_keys(str(placa).strip().upper())
-        inputs_visiveis[1].clear()
-        inputs_visiveis[1].send_keys(str(renavam).strip())
-
-        # 3. Clica no botão CONFIRMAR
-        btn_confirmar = wait.until(
-            EC.presence_of_element_located((
-                By.XPATH, "//button[contains(text(), 'CONFIRMAR') or contains(., 'CONFIRMAR') or @id='submit-veiculo']"
-            ))
-        )
-        clicar_elemento_seguro(driver, btn_confirmar)
-
-        # 4. Clica no link de emissão de licenciamento
-        link_emissao = wait.until(
-            EC.presence_of_element_located((
-                By.XPATH, "//*[contains(text(), 'Clique AQUI se deseja imprimir seu licenciamento.')]"
-            ))
-        )
-        clicar_elemento_seguro(driver, link_emissao)
-
-        # 5. Extrai totalização no modal
-        modal_total = wait.until(
-            EC.visibility_of_element_located((By.XPATH, "//tr[contains(., 'TOTAL')]/td[last()]"))
-        )
-        valor = modal_total.text.strip()
-        return valor if valor else "R$ 0,00"
-
-    except TimeoutException:
-        return "R$ 0,00"
-    except Exception:
-        return "R$ 0,00"
-
-
-def consultar_sefaz(driver: webdriver.Chrome, wait: WebDriverWait, placa: str, renavam: str) -> str:
+def ocultar_console():
     """
-    Consulta o saldo de IPVA na Sefaz-CE de forma acelerada.
-    Se a tabela de 'Quitados' aparecer antes de 'Não quitados', encerra imediatamente sem timeout.
+    Oculta a janela preta de console do Python no Windows, mantendo apenas
+    a interface gráfica visível para o usuário final.
     """
-    url_sefaz = "https://ipva.sefaz.ce.gov.br/#/impostos/emitir-dae"
-    try:
-        driver.get(url_sefaz)
+    if sys.platform == "win32" and "--console" not in sys.argv:
+        try:
+            import ctypes
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE = 0
+        except Exception:
+            pass
 
-        # 1. Preenche Placa
-        xpath_placa = "//input[contains(@ng-model, 'placa') or @name='placa' or @formcontrolname='placa' or @id='mat-input-1']"
-        placa_inp = wait.until(EC.visibility_of_element_located((By.XPATH, xpath_placa)))
-        placa_inp.clear()
-        placa_inp.send_keys(str(placa).strip().upper())
 
-        # 2. Preenche Renavam
-        xpath_renavam = "//input[contains(@ng-model, 'renavam') or @name='renavam' or @formcontrolname='renavam' or @id='mat-input-2']"
-        renavam_inp = wait.until(EC.visibility_of_element_located((By.XPATH, xpath_renavam)))
-        renavam_inp.clear()
-        renavam_inp.send_keys(str(renavam).strip())
-
-        # 3. Clica em Pesquisar
-        xpath_btn = "//button[contains(translate(., 'pesquisar', 'PESQUISAR'), 'PESQUISAR') or contains(@class, 'search-button')]"
-        btn_pesq = wait.until(EC.element_to_be_clickable((By.XPATH, xpath_btn)))
-        clicar_elemento_seguro(driver, btn_pesq)
-
-        # 4. Otimização UI/UX: Aguarda qualquer uma das respostas da tela
-        # (débitos pendentes OU débitos quitados/sem débitos)
-        def resposta_carregada(d):
-            tem_debitos = d.find_elements(By.XPATH, "//*[contains(text(), 'Débitos de IPVA não quitados')]")
-            quitado = d.find_elements(By.XPATH, "//*[contains(text(), 'Débitos de IPVA Regularizados/Quitados') or contains(text(), 'Nenhum débito')]")
-            return tem_debitos or quitado
-
-        wait.until(resposta_carregada)
-
-        # Verifica se há tabela de débitos em aberto
-        debitos_elementos = driver.find_elements(By.XPATH, "//*[contains(text(), 'Débitos de IPVA não quitados')]")
-        if not debitos_elementos:
-            # Veículo quitado / sem débitos: retorno imediato!
-            return "R$ 0,00"
-
-        # 5. Extrai valor em aberto
-        xpath_valor = "//td[contains(., 'Em aberto')]/preceding-sibling::td[contains(., 'R$')][1]"
-        saldo_aberto = wait.until(EC.visibility_of_element_located((By.XPATH, xpath_valor)))
-        valor = saldo_aberto.text.strip()
-        return valor if valor else "R$ 0,00"
-
-    except TimeoutException:
-        return "R$ 0,00"
-    except Exception:
-        return "R$ 0,00"
-
+# ======================================================================================
+# UTILITÁRIOS FINANCEIROS
+# ======================================================================================
 
 def formatar_moeda_float(valor_str: str) -> float:
-    """Converte strings financeiras como 'R$ 188,96' em float 188.96."""
+    """Converte valores monetários textuais (ex: 'R$ 188,96' ou '188.96') em float 188.96."""
     try:
-        limpo = valor_str.replace("R$", "").replace(".", "").replace(",", ".").strip()
+        if not valor_str:
+            return 0.0
+        val_lower = str(valor_str).lower().strip()
+        termos_ignorar = [
+            "-", "n/a", "não consultado", "falha", "erro", "aguardando",
+            "inválid", "não localizado", "timeout", "..."
+        ]
+        if any(termo in val_lower for termo in termos_ignorar):
+            return 0.0
+        limpo = val_lower.replace("r$", "").replace(".", "").replace(",", ".").strip()
         return float(limpo)
     except Exception:
         return 0.0
 
 
-def formatar_planilha_saida(caminho_arquivo: str) -> None:
-    """Aplica formatação executiva na planilha Excel de saída."""
-    from openpyxl import load_workbook
-    wb = load_workbook(caminho_arquivo)
-    ws = wb.active
+def formatar_float_moeda(valor: float) -> str:
+    """Converte um float monetário em formato brasileiro: R$ 1.234,56."""
+    try:
+        formatado = f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return formatado
+    except Exception:
+        return "R$ 0,00"
 
-    cor_cabecalho = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
-    fonte_cabecalho = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    fonte_linhas = Font(name="Calibri", size=10)
-    alinhamento_centro = Alignment(horizontal="center", vertical="center")
-    alinhamento_direita = Alignment(horizontal="right", vertical="center")
-    borda_fina = Border(
-        left=Side(style='thin', color='D9D9D9'),
-        right=Side(style='thin', color='D9D9D9'),
-        top=Side(style='thin', color='D9D9D9'),
-        bottom=Side(style='thin', color='D9D9D9')
-    )
 
-    for cell in ws[1]:
-        cell.fill = cor_cabecalho
-        cell.font = fonte_cabecalho
-        cell.alignment = alinhamento_centro
+# ======================================================================================
+# 1. PROCESSAMENTO RESILIENTE DE DADOS (PANDAS)
+# ======================================================================================
 
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-        for idx, cell in enumerate(row):
-            cell.font = fonte_linhas
-            cell.border = borda_fina
-            if idx in [0, 1]:
-                cell.alignment = alinhamento_centro
+class FrotaDataProcessor:
+    """
+    Gerencia a leitura resiliente de planilhas de entrada, validação de dados
+    e a montagem do DataFrame final, preservando colunas originais do cliente.
+    """
+
+    @staticmethod
+    def localizar_colunas_chave(df: pd.DataFrame) -> tuple[str, str]:
+        """
+        Localiza dinamicamente as colunas correspondentes à Placa e ao RENAVAM,
+        ignorando distinções de maiúsculas, espaços e variações comuns.
+        """
+        col_placa = None
+        col_renavam = None
+
+        for col in df.columns:
+            nome_norm = str(col).strip().lower()
+            if "placa" in nome_norm and not col_placa:
+                col_placa = col
+            if "renavam" in nome_norm and not col_renavam:
+                col_renavam = col
+
+        if not col_placa or not col_renavam:
+            faltantes = []
+            if not col_placa:
+                faltantes.append("'Placa'")
+            if not col_renavam:
+                faltantes.append("'RENAVAM'")
+            raise ValueError(
+                f"A planilha selecionada não possui as seguintes colunas obrigatórias: {', '.join(faltantes)}.\n"
+                f"Colunas encontradas: {list(df.columns)}"
+            )
+
+        return col_placa, col_renavam
+
+    @classmethod
+    def carregar_planilha(cls, caminho_arquivo: str) -> tuple[pd.DataFrame, str, str]:
+        """
+        Carrega a planilha Excel assegurando que:
+        - Linhas vazias sejam removidas
+        - Valores de RENAVAM não percam zeros à esquerda (zfill 11)
+        - Placas sejam higienizadas
+        """
+        df = pd.read_excel(caminho_arquivo, dtype=str)
+        if len(df) == 0:
+            raise ValueError("O arquivo Excel selecionado não contém nenhum registro.")
+
+        col_placa, col_renavam = cls.localizar_colunas_chave(df)
+
+        # 1. Remove linhas onde placa ou renavam são nulos
+        df = df.dropna(subset=[col_placa, col_renavam]).copy()
+
+        # 2. Higienização de Placa (remove hífens, espaços e transforma em maiúsculo)
+        df[col_placa] = (
+            df[col_placa]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .str.replace("-", "", regex=False)
+            .str.replace(" ", "", regex=False)
+        )
+
+        # 3. Higienização de RENAVAM (preserva 11 dígitos com zeros à esquerda)
+        def sanitizar_renavam(val):
+            val_str = str(val).strip()
+            if val_str.endswith(".0"):
+                val_str = val_str[:-2]
+            digitos = "".join(c for c in val_str if c.isdigit())
+            if digitos and len(digitos) <= 11:
+                return digitos.zfill(11)
+            return digitos or val_str
+
+        df[col_renavam] = df[col_renavam].apply(sanitizar_renavam)
+
+        # 4. Remove linhas com campos 'NAN', 'NONE', vazios ou hífens
+        df = df[
+            ~df[col_placa].isin(["NAN", "NONE", "", "N/A", "-", "NULL"]) &
+            ~df[col_renavam].isin(["NAN", "NONE", "", "N/A", "-", "NULL"])
+        ].copy()
+
+        if len(df) == 0:
+            raise ValueError("Nenhum registro com Placa e RENAVAM válidos foi encontrado na planilha.")
+
+        df = df.reset_index(drop=True)
+        return df, col_placa, col_renavam
+
+    @staticmethod
+    def consolidar_resultados(
+        df_original: pd.DataFrame,
+        resultados_lic: list[str],
+        resultados_ipva: list[str],
+        resultados_multas: list[str],
+        qtd_processada: int
+    ) -> pd.DataFrame:
+        """
+        Constrói o DataFrame final preservando todas as colunas originais do usuário
+        e adicionando as colunas oficiais de débitos e situação.
+        Evita falsos negativos: identifica 'Falha na Consulta' e 'Placa Inválida'.
+        """
+        df_final = df_original.iloc[:qtd_processada].copy()
+
+        df_final["Valor_Licenciamento"] = resultados_lic[:qtd_processada]
+        df_final["Valor_IPVA"] = resultados_ipva[:qtd_processada]
+        df_final["Valor_Multas"] = resultados_multas[:qtd_processada]
+
+        # Determinação do Status consolidado
+        status_lista = []
+        for i in range(qtd_processada):
+            lic = str(resultados_lic[i])
+            ipva = str(resultados_ipva[i])
+            multas = str(resultados_multas[i])
+
+            tem_falha = any(
+                termo in v.lower()
+                for v in [lic, ipva, multas]
+                for termo in ["falha", "erro", "timeout", "inválid", "não localizado"]
+            )
+            soma = (
+                formatar_moeda_float(lic) +
+                formatar_moeda_float(ipva) +
+                formatar_moeda_float(multas)
+            )
+
+            if tem_falha:
+                status_lista.append("Falha na Consulta")
+            elif soma > 0:
+                status_lista.append("Com Débitos Pendentes")
             else:
-                cell.alignment = alinhamento_direita
+                status_lista.append("Sem Débitos")
 
-    for col in ws.columns:
-        max_len = max(len(str(cell.value or '')) for cell in col)
-        col_letter = get_column_letter(col[0].column)
-        ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+        df_final["Status"] = status_lista
+        df_final["Data_Consulta"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
-    wb.save(caminho_arquivo)
+        return df_final
 
 
 # ======================================================================================
-# INTERFACE GRÁFICA PROFISSIONAL (TKINTER + TTK)
+# 2. MOTOR DE WEB SCRAPING OTIMIZADO (SELENIUM / DETRAN-CE / SEFAZ-CE)
 # ======================================================================================
 
-class AppConsultaFrota:
-    """Interface Gráfica otimizada para terceiros e usuários corporativos."""
+class FrotaScraperEngine:
+    """
+    Executa a automação de consultas no Detran-CE e Sefaz-CE com alta resiliência,
+    sessão única unificada para Licenciamento e Multas e tratamento explícito de falhas.
+    """
+
+    def __init__(self, headless: bool = True):
+        self.headless = headless
+        self.driver: webdriver.Chrome | None = None
+        self.wait: WebDriverWait | None = None
+
+    def iniciar(self):
+        """Inicializa o WebDriver com configurações silenciosas e robustas."""
+        chrome_options = Options()
+        if self.headless:
+            chrome_options.add_argument("--headless=new")
+
+        chrome_options.add_argument("--start-maximized")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_argument("--log-level=3")
+        chrome_options.add_argument(
+            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
+
+        os.environ["WDM_LOG"] = "0"
+        os.environ["WDM_LOG_LEVEL"] = "0"
+
+        service = Service(ChromeDriverManager().install())
+        if sys.platform == "win32":
+            service.creation_flags = subprocess.CREATE_NO_WINDOW
+
+        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        self.wait = WebDriverWait(self.driver, 15)
+
+    def fechar(self):
+        """Encerra a instância do navegador de forma segura."""
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            self.driver = None
+            self.wait = None
+
+    def _clicar_seguro(self, elemento) -> None:
+        """Executa o clique com scrollIntoView e fallback JavaScript."""
+        try:
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elemento)
+            elemento.click()
+        except Exception:
+            self.driver.execute_script("arguments[0].click();", elemento)
+
+    def consultar_detran(
+        self,
+        placa: str,
+        renavam: str,
+        consultar_lic: bool,
+        consultar_multas: bool
+    ) -> tuple[str, str]:
+        """
+        Consulta Detran-CE na mesma sessão:
+        Extrai Licenciamento e/ou Multas com navegação unificada para velocidade máxima.
+        Diferencia veículos regulares (R$ 0,00) de falhas/erros de conexão.
+        """
+        val_lic = "-" if not consultar_lic else "Falha Detran"
+        val_multas = "-" if not consultar_multas else "Falha Detran"
+
+        if not (consultar_lic or consultar_multas):
+            return "-", "-"
+
+        url_detran = "https://sistemas.detran.ce.gov.br/central/#veiculo"
+        try:
+            self.driver.get(url_detran)
+
+            # 1. Clica no menu lateral de Licenciamento (ou Taxas/Multas)
+            menu_btn = self.wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Licenciamento') or contains(text(), 'Taxas / Multas')]"))
+            )
+            self._clicar_seguro(menu_btn)
+
+            # 2. Localiza inputs visíveis (Placa e RENAVAM)
+            self.wait.until(lambda d: len([i for i in d.find_elements(By.TAG_NAME, "input") if i.is_displayed()]) >= 2)
+            inputs = [i for i in self.driver.find_elements(By.TAG_NAME, "input") if i.is_displayed()]
+
+            inputs[0].clear()
+            inputs[0].send_keys(str(placa).strip().upper())
+            inputs[1].clear()
+            inputs[1].send_keys(str(renavam).strip())
+
+            # 3. Clica em CONFIRMAR
+            btn_confirmar = self.wait.until(
+                EC.presence_of_element_located((
+                    By.XPATH, "//button[contains(text(), 'CONFIRMAR') or @id='submit-veiculo']"
+                ))
+            )
+            self._clicar_seguro(btn_confirmar)
+            time.sleep(1.2)
+
+            # Checa se houve alerta de veículo inexistente/inválido
+            alertas = self.driver.find_elements(
+                By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'Inexistente') or contains(text(), 'Dados incorretos')]"
+            )
+            if alertas:
+                return ("Não Localizado" if consultar_lic else "-"), ("Não Localizado" if consultar_multas else "-")
+
+            # 4. Extração de MULTAS (se solicitado)
+            if consultar_multas:
+                try:
+                    sem_multas = self.driver.find_elements(
+                        By.XPATH, "//*[contains(text(), 'não possui multas') or contains(text(), 'Nenhuma multa') or contains(text(), 'Não constam multas')]"
+                    )
+                    if sem_multas:
+                        val_multas = "R$ 0,00"
+                    else:
+                        links_multa = self.driver.find_elements(
+                            By.XPATH, "//*[contains(text(), 'multas, CLIQUE AQUI') or contains(text(), 'multa, CLIQUE AQUI')]"
+                        )
+                        if links_multa:
+                            self._clicar_seguro(links_multa[0])
+                            time.sleep(1.2)
+
+                            linhas_multa = self.driver.find_elements(By.XPATH, "//table//tr")
+                            soma_multas = 0.0
+                            encontrou_multas = False
+
+                            for linha in linhas_multa:
+                                tds = linha.find_elements(By.TAG_NAME, "td")
+                                if len(tds) >= 6:
+                                    txt_valor = tds[-1].text.strip()
+                                    if "R$" in txt_valor:
+                                        soma_multas += formatar_moeda_float(txt_valor)
+                                        encontrou_multas = True
+
+                            if encontrou_multas:
+                                val_multas = formatar_float_moeda(soma_multas)
+                            else:
+                                el_total = self.driver.find_elements(By.XPATH, "//tr[contains(., 'TOTAL')]/td[last()]")
+                                if el_total and "R$" in el_total[0].text:
+                                    val_multas = el_total[0].text.strip()
+                                else:
+                                    val_multas = "R$ 0,00"
+                        else:
+                            val_multas = "R$ 0,00"
+                except Exception:
+                    val_multas = "Falha Multas"
+
+            # 5. Extração de LICENCIAMENTO (se solicitado)
+            if consultar_lic:
+                try:
+                    # Espera curta de 4s para verificar se o botão de impressão existe
+                    wait_lic = WebDriverWait(self.driver, 4)
+                    link_lic = wait_lic.until(
+                        EC.presence_of_element_located((
+                            By.XPATH, "//*[contains(text(), 'Clique AQUI se deseja imprimir seu licenciamento.')]"
+                        ))
+                    )
+                    self._clicar_seguro(link_lic)
+
+                    modal_total = wait_lic.until(
+                        EC.visibility_of_element_located((By.XPATH, "//tr[contains(., 'TOTAL')]/td[last()]"))
+                    )
+                    texto_lic = modal_total.text.strip()
+                    val_lic = texto_lic if texto_lic else "R$ 0,00"
+                except TimeoutException:
+                    # Quando o link não aparece, o veículo está regular (R$ 0,00)
+                    val_lic = "R$ 0,00"
+                except Exception:
+                    val_lic = "Falha Licenciamento"
+
+            return val_lic, val_multas
+
+        except (TimeoutException, WebDriverException):
+            return ("Falha Detran" if consultar_lic else "-"), ("Falha Detran" if consultar_multas else "-")
+        except Exception:
+            return ("Falha Detran" if consultar_lic else "-"), ("Falha Detran" if consultar_multas else "-")
+
+    def consultar_sefaz_ipva(self, placa: str, renavam: str) -> str:
+        """
+        Consulta o saldo de IPVA em aberto na Sefaz-CE com detecção precoce de veículos quitados.
+        Diferencia veículos regulares (R$ 0,00) de falhas/erros de conexão.
+        """
+        url_sefaz = "https://ipva.sefaz.ce.gov.br/#/impostos/emitir-dae"
+        try:
+            self.driver.get(url_sefaz)
+
+            # 1. Preenche Placa
+            xpath_placa = "//input[contains(@ng-model, 'placa') or @name='placa' or @formcontrolname='placa' or @id='mat-input-1']"
+            inp_placa = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_placa)))
+            inp_placa.clear()
+            inp_placa.send_keys(str(placa).strip().upper())
+
+            # 2. Preenche RENAVAM
+            xpath_renavam = "//input[contains(@ng-model, 'renavam') or @name='renavam' or @formcontrolname='renavam' or @id='mat-input-2']"
+            inp_renavam = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_renavam)))
+            inp_renavam.clear()
+            inp_renavam.send_keys(str(renavam).strip())
+
+            # 3. Clica em Pesquisar
+            xpath_btn = "//button[contains(translate(., 'pesquisar', 'PESQUISAR'), 'PESQUISAR') or contains(@class, 'search-button')]"
+            btn_pesquisar = self.wait.until(EC.element_to_be_clickable((By.XPATH, xpath_btn)))
+            self._clicar_seguro(btn_pesquisar)
+
+            # 4. Aguarda carregar resposta (débitos em aberto OU débitos quitados OU aviso de erro)
+            def resposta_pronta(d):
+                tem_aberto = d.find_elements(By.XPATH, "//*[contains(text(), 'Débitos de IPVA não quitados')]")
+                quitado = d.find_elements(
+                    By.XPATH, "//*[contains(text(), 'Débitos de IPVA Regularizados/Quitados') or contains(text(), 'Nenhum débito')]"
+                )
+                erro = d.find_elements(
+                    By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'inválido') or contains(text(), 'Não há registro')]"
+                )
+                return tem_aberto or quitado or erro
+
+            self.wait.until(resposta_pronta)
+
+            # Se acusar não encontrado
+            if self.driver.find_elements(By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'Não há registro')]"):
+                return "Não Localizado"
+
+            # Se não há tabela de não quitados, encerra como R$ 0,00 imediatamente
+            if not self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Débitos de IPVA não quitados')]"):
+                return "R$ 0,00"
+
+            # 5. Extrai saldo em aberto
+            xpath_valor = "//td[contains(., 'Em aberto')]/preceding-sibling::td[contains(., 'R$')][1]"
+            el_valor = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_valor)))
+            txt_ipva = el_valor.text.strip()
+            return txt_ipva if txt_ipva else "R$ 0,00"
+
+        except (TimeoutException, WebDriverException):
+            return "Falha Sefaz"
+        except Exception:
+            return "Falha Sefaz"
+
+
+# ======================================================================================
+# 3. EXPORTAÇÃO EXECUTIVA (EXCEL E PDF PAISAGEM COM REPORTLAB)
+# ======================================================================================
+
+class NumberedCanvas(canvas.Canvas):
+    """Canvas customizado para renderizar número total de páginas dinamicamente no rodapé."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        num_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self.draw_footer(num_pages)
+            canvas.Canvas.showPage(self)
+        canvas.Canvas.save(self)
+
+    def draw_footer(self, page_count):
+        self.saveState()
+        self.setFont("Helvetica", 8)
+        self.setFillColor(colors.HexColor("#64748B"))
+        largura, altura = landscape(A4)
+        texto_esq = "Automação de Frota CE v2.1 | Relatório Oficial Consolidado (Detran-CE & Sefaz-CE)"
+        texto_dir = f"Página {self._pageNumber} de {page_count}"
+        self.drawString(25, 18, texto_esq)
+        self.drawRightString(largura - 25, 18, texto_dir)
+        self.setStrokeColor(colors.HexColor("#E2E8F0"))
+        self.setLineWidth(0.5)
+        self.line(25, 28, largura - 25, 28)
+        self.restoreState()
+
+
+class FrotaRelatorioExporter:
+    """Exportador para planilhas Excel formatadas e relatórios PDF em layout Paisagem."""
+
+    @staticmethod
+    def exportar_excel(df: pd.DataFrame, caminho_arquivo: str) -> str:
+        """
+        Gera e formata a planilha Excel de saída com estilo corporativo.
+        Trata PermissionError salvando com timestamp para evitar perda de dados.
+        Retorna o caminho efetivo do arquivo gravado.
+        """
+        caminho_efetivo = caminho_arquivo
+        try:
+            df.to_excel(caminho_efetivo, index=False, engine="openpyxl")
+        except PermissionError:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            pasta, nome = os.path.split(caminho_arquivo)
+            raiz, ext = os.path.splitext(nome)
+            caminho_efetivo = os.path.join(pasta, f"{raiz}_{timestamp}{ext}")
+            df.to_excel(caminho_efetivo, index=False, engine="openpyxl")
+
+        wb = load_workbook(caminho_efetivo)
+        ws = wb.active
+
+        cor_cabecalho = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+        fonte_cabecalho = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        fonte_linhas = Font(name="Calibri", size=10)
+        alinhamento_centro = Alignment(horizontal="center", vertical="center")
+        alinhamento_direita = Alignment(horizontal="right", vertical="center")
+        alinhamento_esquerda = Alignment(horizontal="left", vertical="center")
+        borda_fina = Border(
+            left=Side(style='thin', color='D9D9D9'),
+            right=Side(style='thin', color='D9D9D9'),
+            top=Side(style='thin', color='D9D9D9'),
+            bottom=Side(style='thin', color='D9D9D9')
+        )
+
+        for cell in ws[1]:
+            cell.fill = cor_cabecalho
+            cell.font = fonte_cabecalho
+            cell.alignment = alinhamento_centro
+
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for cell in row:
+                cell.font = fonte_linhas
+                cell.border = borda_fina
+                val_str = str(cell.value or "")
+                if val_str.startswith("R$"):
+                    cell.alignment = alinhamento_direita
+                elif any(k in str(ws.cell(1, cell.column).value).lower() for k in ["placa", "renavam", "status", "data"]):
+                    cell.alignment = alinhamento_centro
+                else:
+                    cell.alignment = alinhamento_esquerda
+
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
+
+        try:
+            wb.save(caminho_efetivo)
+        except PermissionError:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            pasta, nome = os.path.split(caminho_arquivo)
+            raiz, ext = os.path.splitext(nome)
+            caminho_efetivo = os.path.join(pasta, f"{raiz}_{timestamp}{ext}")
+            wb.save(caminho_efetivo)
+
+        return caminho_efetivo
+
+    @staticmethod
+    def exportar_pdf(df: pd.DataFrame, caminho_arquivo: str, totais: dict, filtros_ativos: list[str]) -> str:
+        """
+        Gera relatório PDF profissional em formato Paisagem (Landscape A4).
+        Trata PermissionError salvando com timestamp para evitar perda de dados.
+        Retorna o caminho efetivo do arquivo gravado.
+        """
+        caminho_efetivo = caminho_arquivo
+
+        def construir_story():
+            styles = getSampleStyleSheet()
+            style_titulo = ParagraphStyle(
+                'Titulo',
+                parent=styles['Heading1'],
+                fontName='Helvetica-Bold',
+                fontSize=15,
+                leading=18,
+                textColor=colors.HexColor('#1E3A8A'),
+                spaceAfter=2
+            )
+            style_sub = ParagraphStyle(
+                'SubTitulo',
+                parent=styles['Normal'],
+                fontName='Helvetica',
+                fontSize=8.5,
+                leading=11,
+                textColor=colors.HexColor('#475569'),
+                spaceAfter=10
+            )
+            style_th = ParagraphStyle(
+                'Th',
+                fontName='Helvetica-Bold',
+                fontSize=8,
+                leading=10,
+                textColor=colors.white,
+                alignment=1
+            )
+            style_td = ParagraphStyle(
+                'Td',
+                fontName='Helvetica',
+                fontSize=7.5,
+                leading=9.5,
+                textColor=colors.HexColor('#1E293B'),
+                alignment=0
+            )
+            style_td_center = ParagraphStyle('TdCenter', parent=style_td, alignment=1)
+            style_td_right = ParagraphStyle('TdRight', parent=style_td, alignment=2)
+
+            story = []
+
+            # 1. Cabeçalho
+            story.append(Paragraph("🚗 RELATÓRIO CONSOLIDADO DE DÉBITOS VEICULARES - FROTA CE", style_titulo))
+            filtros_str = ", ".join(filtros_ativos) if filtros_ativos else "Todos"
+            data_extracao = datetime.now().strftime("%d/%m/%Y às %H:%M:%S")
+            sub_info = f"Emissão: {data_extracao}  |  Débitos Consultados: <b>{filtros_str}</b>  |  Total de Veículos: <b>{len(df)}</b>"
+            story.append(Paragraph(sub_info, style_sub))
+
+            # 2. Cards de Resumo Financeiro
+            largura_util = landscape(A4)[0] - 50  # ~791.89 pt
+            larg_card = largura_util / 5.0
+            cards_data = [
+                [
+                    Paragraph("<b>VEÍCULOS</b><br/><font size=10 color='#1E3A8A'><b>" + str(len(df)) + "</b></font>", style_td_center),
+                    Paragraph("<b>TOTAL LICENCIAMENTO</b><br/><font size=10 color='#B45309'><b>" + totais.get('lic', 'R$ 0,00') + "</b></font>", style_td_center),
+                    Paragraph("<b>TOTAL IPVA</b><br/><font size=10 color='#B91C1C'><b>" + totais.get('ipva', 'R$ 0,00') + "</b></font>", style_td_center),
+                    Paragraph("<b>TOTAL MULTAS</b><br/><font size=10 color='#7C2D12'><b>" + totais.get('multas', 'R$ 0,00') + "</b></font>", style_td_center),
+                    Paragraph("<b>TOTAL GERAL</b><br/><font size=10 color='#15803D'><b>" + totais.get('total', 'R$ 0,00') + "</b></font>", style_td_center),
+                ]
+            ]
+            t_cards = Table(cards_data, colWidths=[larg_card] * 5)
+            t_cards.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F8FAFC')),
+                ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#CBD5E1')),
+                ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E2E8F0')),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ]))
+            story.append(t_cards)
+            story.append(Spacer(1, 10))
+
+            # 3. Tabela Detalhada com Colunas
+            colunas = list(df.columns)
+            num_cols = len(colunas)
+            larg_col = largura_util / num_cols
+
+            table_data = [[Paragraph(f"<b>{col}</b>", style_th) for col in colunas]]
+
+            for _, row in df.iterrows():
+                linha_celulas = []
+                for col in colunas:
+                    val = str(row[col] if pd.notna(row[col]) else "")
+                    if val.startswith("R$"):
+                        est = style_td_right
+                    elif any(k in col.lower() for k in ["placa", "renavam", "status", "data"]):
+                        est = style_td_center
+                    else:
+                        est = style_td
+                    linha_celulas.append(Paragraph(val, est))
+                table_data.append(linha_celulas)
+
+            t_frota = Table(table_data, colWidths=[larg_col] * num_cols, repeatRows=1)
+            t_style = [
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A8A')),
+                ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ]
+
+            for i in range(1, len(table_data)):
+                bg = colors.HexColor('#F8FAFC') if i % 2 == 1 else colors.white
+                t_style.append(('BACKGROUND', (0, i), (-1, i), bg))
+
+            t_frota.setStyle(TableStyle(t_style))
+            story.append(t_frota)
+            return story
+
+        try:
+            doc = SimpleDocTemplate(
+                caminho_efetivo,
+                pagesize=landscape(A4),
+                leftMargin=25,
+                rightMargin=25,
+                topMargin=25,
+                bottomMargin=35
+            )
+            doc.build(construir_story(), canvasmaker=NumberedCanvas)
+        except PermissionError:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            pasta, nome = os.path.split(caminho_arquivo)
+            raiz, ext = os.path.splitext(nome)
+            caminho_efetivo = os.path.join(pasta, f"{raiz}_{timestamp}{ext}")
+            doc = SimpleDocTemplate(
+                caminho_efetivo,
+                pagesize=landscape(A4),
+                leftMargin=25,
+                rightMargin=25,
+                topMargin=25,
+                bottomMargin=35
+            )
+            doc.build(construir_story(), canvasmaker=NumberedCanvas)
+
+        return caminho_efetivo
+
+
+# ======================================================================================
+# 4. INTERFACE GRÁFICA PROFISSIONAL (TKINTER + TTK)
+# ======================================================================================
+
+class AppConsultaFrotaGUI:
+    """Interface Gráfica com filtros dinâmicos, acompanhamento em tempo real e exportações."""
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Consulta de Frota - Detran/Sefaz CE")
-        self.root.geometry("880x690")
-        self.root.minsize(780, 600)
+        self.root.title("Consulta de Frota - Detran/Sefaz CE (v2.1)")
+        self.root.geometry("960x780")
+        self.root.minsize(880, 700)
 
-        # Variáveis de Estado
+        # Variáveis de Configuração e Estado
         self.caminho_arquivo = tk.StringVar(value="")
-        self.arquivo_saida_gerado = ""
+        self.pasta_destino_var = tk.StringVar(value="")
+        self.arquivo_excel_gerado = ""
+        self.arquivo_pdf_gerado = ""
+
+        # Filtros de Débito
+        self.var_ipva = tk.BooleanVar(value=True)
+        self.var_lic = tk.BooleanVar(value=True)
+        self.var_multas = tk.BooleanVar(value=True)
+
+        # Formato de Exportação ("excel", "pdf", "ambos")
+        self.var_formato_exportacao = tk.StringVar(value="ambos")
+
+        # Opções Gerais
         self.var_headless = tk.BooleanVar(value=True)
-        self.var_status = tk.StringVar(value="Pronto para iniciar. Selecione a planilha de veículos.")
+        self.var_status = tk.StringVar(value="Pronto para iniciar. Selecione a planilha de frota.")
+
+        # Métricas do Dashboard
         self.var_metricas_veiculos = tk.StringVar(value="0 / 0")
         self.var_metricas_lic = tk.StringVar(value="R$ 0,00")
         self.var_metricas_ipva = tk.StringVar(value="R$ 0,00")
+        self.var_metricas_multas = tk.StringVar(value="R$ 0,00")
         self.var_metricas_total = tk.StringVar(value="R$ 0,00")
 
+        # Controle de Execução e Memória de Resultados
         self.is_executando = False
         self.cancelar_solicitado = False
-        self.driver_ativo = None
-        self.df_carregado = None
+        self.scraper_engine: FrotaScraperEngine | None = None
+        self.df_carregado: pd.DataFrame | None = None
+        self.col_placa = "Placa"
+        self.col_renavam = "RENAVAM"
+        self.resultados_memoria: dict[int, dict] = {}
+        self.indices_em_falha: list[int] = []
 
-        # Estilos Visuais Modernos
+        # Modo Noturno / Dark Mode
+        self.modo_noturno = False
+        self.cards_metricas = []
+
+        # Configuração Visual
         self.style = ttk.Style()
-        self._configurar_estilos()
-
-        # Construção da Interface
-        self._criar_layout()
-
-        # Protocolo de Encerramento Seguro
-        self.root.protocol("WM_DELETE_WINDOW", self._ao_fechar_janela)
-
-    def _configurar_estilos(self):
-        """Define cores corporativas e fontes modernas."""
         try:
             self.style.theme_use("clam")
         except Exception:
             pass
 
-        self.root.configure(bg="#F0F4F8")
-        self.style.configure(".", background="#F0F4F8", font=("Segoe UI", 10))
-        self.style.configure("TLabel", background="#F0F4F8", foreground="#2D3748")
-        
-        # Cabeçalhos
-        self.style.configure("Header.TLabel", font=("Segoe UI", 15, "bold"), foreground="#1A365D")
-        self.style.configure("SubHeader.TLabel", font=("Segoe UI", 9), foreground="#4A5568")
-        
+        self._criar_layout()
+        self._aplicar_tema()
+
+        self.root.protocol("WM_DELETE_WINDOW", self._ao_fechar_janela)
+
+    def _aplicar_tema(self):
+        """Aplica tokens de cores e estilos para Modo Claro ou Modo Noturno."""
+        if self.modo_noturno:
+            bg_root = "#0F172A"       # Slate 900
+            bg_card = "#1E293B"       # Slate 800
+            border_card = "#334155"   # Slate 700
+            fg_title = "#F8FAFC"      # Slate 50
+            fg_sub = "#94A3B8"        # Slate 400
+            fg_text = "#E2E8F0"       # Slate 200
+            bg_tree = "#1E293B"
+            fg_tree = "#F1F5F9"
+            bg_tree_hd = "#334155"
+            fg_tree_hd = "#F8FAFC"
+            bg_sel = "#2563EB"
+            fg_sel = "#FFFFFF"
+            bg_tab = "#1E293B"
+            fg_tab = "#94A3B8"
+            bg_tab_sel = "#0F172A"
+            fg_tab_sel = "#38BDF8"
+            bg_log = "#0B0F19"
+            fg_log = "#38BDF8"
+            status_fg = "#60A5FA"
+            bg_btn_sec = "#334155"
+            fg_btn_sec = "#F8FAFC"
+            bg_btn_sec_act = "#475569"
+            bg_btn_muted = "#334155"
+            fg_btn_muted = "#F8FAFC"
+            bg_btn_theme = "#334155"
+            fg_btn_theme = "#F8FAFC"
+        else:
+            bg_root = "#F0F4F8"
+            bg_card = "#FFFFFF"
+            border_card = "#CBD5E1"
+            fg_title = "#1A365D"
+            fg_sub = "#4A5568"
+            fg_text = "#2D3748"
+            bg_tree = "#FFFFFF"
+            fg_tree = "#2D3748"
+            bg_tree_hd = "#E2E8F0"
+            fg_tree_hd = "#1A365D"
+            bg_sel = "#BEE3F8"
+            fg_sel = "#1A365D"
+            bg_tab = "#E2E8F0"
+            fg_tab = "#4A5568"
+            bg_tab_sel = "#FFFFFF"
+            fg_tab_sel = "#1A365D"
+            bg_log = "#1A202C"
+            fg_log = "#E2E8F0"
+            status_fg = "#1A365D"
+            bg_btn_sec = "#4A5568"
+            fg_btn_sec = "#FFFFFF"
+            bg_btn_sec_act = "#2D3748"
+            bg_btn_muted = "#E2E8F0"
+            fg_btn_muted = "#2D3748"
+            bg_btn_theme = "#E2E8F0"
+            fg_btn_theme = "#1A365D"
+
+        self.root.configure(bg=bg_root)
+
+        # Configurações ttk gerais
+        self.style.configure(".", background=bg_root, foreground=fg_text, font=("Segoe UI", 9))
+        self.style.configure("TFrame", background=bg_root)
+        self.style.configure("Card.TFrame", background=bg_card)
+        self.style.configure("TLabel", background=bg_root, foreground=fg_text)
+        self.style.configure("Card.TLabel", background=bg_card, foreground=fg_text)
+        self.style.configure("Header.TLabel", background=bg_root, font=("Segoe UI", 14, "bold"), foreground=fg_title)
+        self.style.configure("SubHeader.TLabel", background=bg_root, font=("Segoe UI", 9), foreground=fg_sub)
+
         # Cards / LabelFrames
-        self.style.configure("Card.TLabelframe", background="#FFFFFF", relief=tk.SOLID, borderwidth=1)
-        self.style.configure("Card.TLabelframe.Label", font=("Segoe UI", 10, "bold"), foreground="#1A365D", background="#F0F4F8")
+        self.style.configure("Card.TLabelframe", background=bg_card, relief=tk.SOLID, borderwidth=1)
+        self.style.configure("Card.TLabelframe.Label", font=("Segoe UI", 9, "bold"), foreground=fg_title, background=bg_root)
+
+        # Checkbuttons e Radiobuttons
+        self.style.configure("Card.TCheckbutton", background=bg_card, foreground=fg_text)
+        self.style.map("Card.TCheckbutton", background=[("active", bg_card)], foreground=[("active", fg_title)])
+        self.style.configure("Card.TRadiobutton", background=bg_card, foreground=fg_text)
+        self.style.map("Card.TRadiobutton", background=[("active", bg_card)], foreground=[("active", fg_title)])
 
         # Botão Primário (Selecionar)
         self.style.configure(
             "Primary.TButton",
-            font=("Segoe UI", 10, "bold"),
-            background="#2B6CB0",
-            foreground="#FFFFFF",
-            padding=(12, 7)
-        )
-        self.style.map("Primary.TButton", background=[("active", "#2C5282"), ("disabled", "#CBD5E0")])
-
-        # Botão de Execução (Verde)
-        self.style.configure(
-            "Action.TButton",
-            font=("Segoe UI", 10, "bold"),
-            background="#2E7D32",
-            foreground="#FFFFFF",
-            padding=(15, 8)
-        )
-        self.style.map("Action.TButton", background=[("active", "#1B5E20"), ("disabled", "#CBD5E0")])
-
-        # Botão de Cancelamento (Vermelho)
-        self.style.configure(
-            "Danger.TButton",
-            font=("Segoe UI", 10, "bold"),
-            background="#C53030",
-            foreground="#FFFFFF",
-            padding=(12, 8)
-        )
-        self.style.map("Danger.TButton", background=[("active", "#9B2C2C"), ("disabled", "#CBD5E0")])
-
-        # Botões de Ação Final (Cinza Corporativo)
-        self.style.configure(
-            "Secondary.TButton",
             font=("Segoe UI", 9, "bold"),
-            background="#4A5568",
+            background="#2563EB",
             foreground="#FFFFFF",
             padding=(10, 6)
         )
-        self.style.map("Secondary.TButton", background=[("active", "#2D3748"), ("disabled", "#E2E8F0")])
+        self.style.map("Primary.TButton", background=[("active", "#1D4ED8"), ("disabled", "#94A3B8")])
 
-        # Estilo da Tabela Treeview
+        # Botão de Ação (Iniciar)
+        self.style.configure(
+            "Action.TButton",
+            font=("Segoe UI", 10, "bold"),
+            background="#16A34A",
+            foreground="#FFFFFF",
+            padding=(14, 7)
+        )
+        self.style.map("Action.TButton", background=[("active", "#15803D"), ("disabled", "#94A3B8")])
+
+        # Botão de Cancelar
+        self.style.configure(
+            "Danger.TButton",
+            font=("Segoe UI", 9, "bold"),
+            background="#DC2626",
+            foreground="#FFFFFF",
+            padding=(10, 7)
+        )
+        self.style.map("Danger.TButton", background=[("active", "#B91C1C"), ("disabled", "#94A3B8")])
+
+        # Botões Secundários
+        self.style.configure(
+            "Secondary.TButton",
+            font=("Segoe UI", 9, "bold"),
+            background=bg_btn_sec,
+            foreground=fg_btn_sec,
+            padding=(9, 5)
+        )
+        self.style.map("Secondary.TButton", background=[("active", bg_btn_sec_act), ("disabled", "#64748B")])
+
+        # Botão Muted (Alternar Filtros)
+        self.style.configure(
+            "Muted.TButton",
+            font=("Segoe UI", 8, "bold"),
+            background=bg_btn_muted,
+            foreground=fg_btn_muted,
+            padding=(6, 3)
+        )
+        self.style.map("Muted.TButton", background=[("active", border_card)])
+
+        # Botão Alternador de Tema (Dark / Light)
+        self.style.configure(
+            "Theme.TButton",
+            font=("Segoe UI", 9, "bold"),
+            background=bg_btn_theme,
+            foreground=fg_btn_theme,
+            padding=(10, 5)
+        )
+        self.style.map("Theme.TButton", background=[("active", border_card)])
+
+        # Notebook / Abas
+        self.style.configure("TNotebook", background=bg_root)
+        self.style.configure("TNotebook.Tab", background=bg_tab, foreground=fg_tab, padding=(10, 4), font=("Segoe UI", 9, "bold"))
+        self.style.map("TNotebook.Tab", background=[("selected", bg_tab_sel)], foreground=[("selected", fg_tab_sel)])
+
+        # Tabela Treeview
         self.style.configure(
             "Treeview",
-            background="#FFFFFF",
-            fieldbackground="#FFFFFF",
-            foreground="#2D3748",
-            rowheight=26,
+            background=bg_tree,
+            fieldbackground=bg_tree,
+            foreground=fg_tree,
+            rowheight=25,
             font=("Segoe UI", 9)
         )
         self.style.configure(
             "Treeview.Heading",
-            background="#E2E8F0",
-            foreground="#1A365D",
+            background=bg_tree_hd,
+            foreground=fg_tree_hd,
             font=("Segoe UI", 9, "bold")
         )
-        self.style.map("Treeview", background=[("selected", "#BEE3F8")], foreground=[("selected", "#1A365D")])
+        self.style.map("Treeview", background=[("selected", bg_sel)], foreground=[("selected", fg_sel)])
+
+        # Tags da Treeview (com tag 'falha' diferenciada)
+        if hasattr(self, "tree"):
+            if self.modo_noturno:
+                self.tree.tag_configure("pendente", foreground="#94A3B8")
+                self.tree.tag_configure("processando", background="#1E3A8A", foreground="#93C5FD", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("com_debito", background="#450A0A", foreground="#FCA5A5", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("sem_debito", background="#064E3B", foreground="#6EE7B7")
+                self.tree.tag_configure("falha", background="#451A03", foreground="#FCD34D", font=("Segoe UI", 9, "bold"))
+            else:
+                self.tree.tag_configure("pendente", foreground="#718096")
+                self.tree.tag_configure("processando", background="#EBF8FF", foreground="#2B6CB0", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("com_debito", background="#FFF5F5", foreground="#C53030", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("sem_debito", background="#F0FFF4", foreground="#22543D")
+                self.tree.tag_configure("falha", background="#FEF3C7", foreground="#B45309", font=("Segoe UI", 9, "bold"))
+
+        # Log Textual
+        if hasattr(self, "txt_log"):
+            self.txt_log.configure(bg=bg_log, fg=fg_log, insertbackground="#FFFFFF")
+
+        # Rótulo de Status
+        if hasattr(self, "lbl_status"):
+            self.lbl_status.configure(foreground=status_fg)
+
+        # Rótulos de Caminho
+        if hasattr(self, "lbl_caminho"):
+            if self.df_carregado is not None:
+                self.lbl_caminho.configure(foreground="#4ADE80" if self.modo_noturno else "#15803D")
+            else:
+                self.lbl_caminho.configure(foreground=fg_sub)
+
+        # Atualização dos Mini-Cards de Métricas
+        for card_frame, lbl_t, lbl_v, cor_l, cor_d in self.cards_metricas:
+            card_frame.configure(bg=bg_card, highlightbackground=border_card)
+            lbl_t.configure(bg=bg_card, fg=fg_sub)
+            lbl_v.configure(bg=bg_card, fg=cor_d if self.modo_noturno else cor_l)
+
+    def _alternar_modo_noturno(self):
+        """Alterna entre Modo Claro e Modo Noturno em tempo real."""
+        self.modo_noturno = not self.modo_noturno
+        self.btn_tema.config(text="☀️ Modo Claro" if self.modo_noturno else "🌙 Modo Noturno")
+        self._aplicar_tema()
+        self._adicionar_log("Modo Noturno ativado." if self.modo_noturno else "Modo Claro ativado.")
 
     def _criar_layout(self):
-        """Monta o grid estruturado com hierarquia visual clara."""
-        container = ttk.Frame(self.root, padding="15 15 15 15")
+        """Estrutura os painéis, filtros e controles na janela."""
+        container = ttk.Frame(self.root, padding="12 12 12 12")
         container.pack(fill=tk.BOTH, expand=True)
 
-        # -------------------------------------------------------------------------
-        # 1. CABEÇALHO COM TÍTULO E VERSÃO
-        # -------------------------------------------------------------------------
+        # 1. CABEÇALHO (Título + Alternador de Tema)
         header = ttk.Frame(container)
-        header.pack(fill=tk.X, pady=(0, 10))
+        header.pack(fill=tk.X, pady=(0, 8))
 
-        lbl_tit = ttk.Label(header, text="🚗 Consulta de Frota - Detran/Sefaz CE", style="Header.TLabel")
+        lbl_tit = ttk.Label(header, text="🚗 Consulta de Frota - Detran/Sefaz CE (v2.1)", style="Header.TLabel")
         lbl_tit.pack(side=tk.LEFT)
 
         lbl_sub = ttk.Label(
             header,
-            text="Automação Inteligente de Débitos de Licenciamento & IPVA",
+            text="Automação Resiliente: IPVA, Licenciamento & Multas com Exportação PDF/Excel",
             style="SubHeader.TLabel"
         )
-        lbl_sub.pack(side=tk.LEFT, padx=(15, 0), pady=(4, 0))
+        lbl_sub.pack(side=tk.LEFT, padx=(12, 0), pady=(3, 0))
 
-        # -------------------------------------------------------------------------
-        # 2. CARD: SELEÇÃO DE PLANILHA E CONTROLES
-        # -------------------------------------------------------------------------
-        frame_topo = ttk.LabelFrame(container, text=" Configurações e Seleção ", style="Card.TLabelframe", padding="12 10 12 10")
-        frame_topo.pack(fill=tk.X, pady=(0, 10))
+        # Botão Alternador de Modo Noturno
+        self.btn_tema = ttk.Button(
+            header,
+            text="🌙 Modo Noturno",
+            style="Theme.TButton",
+            command=self._alternar_modo_noturno
+        )
+        self.btn_tema.pack(side=tk.RIGHT)
 
-        linha1 = ttk.Frame(frame_topo)
-        linha1.pack(fill=tk.X, pady=(0, 8))
+        # 2. CARD: SELEÇÃO, FILTROS E EXPORTAÇÃO
+        frame_configs = ttk.LabelFrame(container, text=" Configurações e Filtros de Consulta ", style="Card.TLabelframe", padding="10 8 10 8")
+        frame_configs.pack(fill=tk.X, pady=(0, 8))
+
+        # Linha 1: Seleção de Arquivo
+        linha_arq = ttk.Frame(frame_configs, style="Card.TFrame")
+        linha_arq.pack(fill=tk.X, pady=(0, 5))
 
         self.btn_selecionar = ttk.Button(
-            linha1,
+            linha_arq,
             text="📁 Selecionar Planilha (.xlsx)",
             style="Primary.TButton",
             command=self._selecionar_arquivo
@@ -375,28 +1061,87 @@ class AppConsultaFrota:
         self.btn_selecionar.pack(side=tk.LEFT, padx=(0, 10))
 
         self.lbl_caminho = ttk.Label(
-            linha1,
-            text="Nenhum arquivo selecionado",
+            linha_arq,
+            text="Nenhuma planilha selecionada",
             font=("Segoe UI", 9, "italic"),
-            foreground="#718096"
+            foreground="#718096",
+            style="Card.TLabel"
         )
         self.lbl_caminho.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # Linha de Ações e Opções
-        linha2 = ttk.Frame(frame_topo)
-        linha2.pack(fill=tk.X)
+        # Linha 1.5: Pasta de Destino Customizada (Melhoria 7)
+        linha_dest = ttk.Frame(frame_configs, style="Card.TFrame")
+        linha_dest.pack(fill=tk.X, pady=(0, 6))
+
+        self.btn_pasta_destino = ttk.Button(
+            linha_dest,
+            text="📂 Pasta de Destino...",
+            style="Secondary.TButton",
+            command=self._selecionar_pasta_destino
+        )
+        self.btn_pasta_destino.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.lbl_pasta_destino = ttk.Label(
+            linha_dest,
+            text="Destino dos relatórios: Automático (mesma pasta da planilha)",
+            font=("Segoe UI", 8.5),
+            foreground="#64748B",
+            style="Card.TLabel"
+        )
+        self.lbl_pasta_destino.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Linha 2: Filtros de Débito (Checkboxes)
+        linha_filtros = ttk.Frame(frame_configs, style="Card.TFrame")
+        linha_filtros.pack(fill=tk.X, pady=(0, 6))
+
+        lbl_filtro = ttk.Label(linha_filtros, text="Consultar Débitos:", font=("Segoe UI", 9, "bold"), style="Card.TLabel")
+        lbl_filtro.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.chk_ipva = ttk.Checkbutton(linha_filtros, text="IPVA (Sefaz-CE)", variable=self.var_ipva, style="Card.TCheckbutton")
+        self.chk_ipva.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.chk_lic = ttk.Checkbutton(linha_filtros, text="Licenciamento (Detran-CE)", variable=self.var_lic, style="Card.TCheckbutton")
+        self.chk_lic.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.chk_multas = ttk.Checkbutton(linha_filtros, text="Multas (Detran-CE)", variable=self.var_multas, style="Card.TCheckbutton")
+        self.chk_multas.pack(side=tk.LEFT, padx=(0, 12))
+
+        self.btn_toggle_filtros = ttk.Button(
+            linha_filtros,
+            text="☑️ Marcar/Desmarcar Todos",
+            style="Muted.TButton",
+            command=self._alternar_todos_filtros
+        )
+        self.btn_toggle_filtros.pack(side=tk.LEFT)
+
+        # Linha 3: Formato de Exportação & Headless
+        linha_opcoes = ttk.Frame(frame_configs, style="Card.TFrame")
+        linha_opcoes.pack(fill=tk.X, pady=(0, 4))
+
+        lbl_exp = ttk.Label(linha_opcoes, text="Exportação:", font=("Segoe UI", 9, "bold"), style="Card.TLabel")
+        lbl_exp.pack(side=tk.LEFT, padx=(0, 8))
+
+        rb_excel = ttk.Radiobutton(linha_opcoes, text="Excel (.xlsx)", value="excel", variable=self.var_formato_exportacao, style="Card.TRadiobutton")
+        rb_excel.pack(side=tk.LEFT, padx=(0, 8))
+
+        rb_pdf = ttk.Radiobutton(linha_opcoes, text="PDF Paisagem (.pdf)", value="pdf", variable=self.var_formato_exportacao, style="Card.TRadiobutton")
+        rb_pdf.pack(side=tk.LEFT, padx=(0, 8))
+
+        rb_ambos = ttk.Radiobutton(linha_opcoes, text="Ambos (Excel + PDF)", value="ambos", variable=self.var_formato_exportacao, style="Card.TRadiobutton")
+        rb_ambos.pack(side=tk.LEFT, padx=(0, 15))
 
         self.chk_headless = ttk.Checkbutton(
-            linha2,
-            text="Navegador invisível em segundo plano (Recomendado)",
-            variable=self.var_headless
+            linha_opcoes,
+            text="Navegador invisível em segundo plano",
+            variable=self.var_headless,
+            style="Card.TCheckbutton"
         )
-        self.chk_headless.pack(side=tk.LEFT, pady=2)
+        self.chk_headless.pack(side=tk.LEFT)
 
-        # Botões de Ação (Iniciar / Cancelar)
+        # Botões de Ação (Iniciar / Cancelar) posicionados à direita
         self.btn_cancelar = ttk.Button(
-            linha2,
-            text="⏹️ Cancelar Consulta",
+            linha_opcoes,
+            text="⏹️ Cancelar",
             style="Danger.TButton",
             state="disabled",
             command=self._cancelar_processamento
@@ -404,7 +1149,7 @@ class AppConsultaFrota:
         self.btn_cancelar.pack(side=tk.RIGHT, padx=(6, 0))
 
         self.btn_iniciar = ttk.Button(
-            linha2,
+            linha_opcoes,
             text="▶️ Iniciar Consulta",
             style="Action.TButton",
             state="disabled",
@@ -412,52 +1157,49 @@ class AppConsultaFrota:
         )
         self.btn_iniciar.pack(side=tk.RIGHT)
 
-        # -------------------------------------------------------------------------
         # 3. CARD: TABELA INTERATIVA EM TEMPO REAL E LOGS
-        # -------------------------------------------------------------------------
-        frame_centro = ttk.LabelFrame(container, text=" Acompanhamento em Tempo Real ", style="Card.TLabelframe", padding="10 10 10 10")
-        frame_centro.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        frame_centro = ttk.LabelFrame(container, text=" Acompanhamento em Tempo Real ", style="Card.TLabelframe", padding="8 8 8 8")
+        frame_centro.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
-        # Caderno de Abas (Notebook)
         self.notebook = ttk.Notebook(frame_centro)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
         # Aba 1: Tabela Visual
-        aba_tabela = ttk.Frame(self.notebook, padding="6 6 6 6")
+        aba_tabela = ttk.Frame(self.notebook, padding="4 4 4 4")
         self.notebook.add(aba_tabela, text=" 📊 Tabela de Veículos ")
 
-        colunas = ("num", "placa", "renavam", "licenciamento", "ipva", "situacao")
-        self.tree = ttk.Treeview(aba_tabela, columns=colunas, show="headings", selectmode="browse")
+        colunas = ("num", "placa", "renavam", "licenciamento", "ipva", "multas", "situacao")
+        self.tree = ttk.Treeview(aba_tabela, columns=colunas, show="headings", selectmode="extended")
 
         self.tree.heading("num", text="Item")
         self.tree.heading("placa", text="Placa")
         self.tree.heading("renavam", text="RENAVAM")
         self.tree.heading("licenciamento", text="Licenciamento (Detran)")
-        self.tree.heading("ipva", text="IPVA em Aberto (Sefaz)")
+        self.tree.heading("ipva", text="IPVA (Sefaz)")
+        self.tree.heading("multas", text="Multas (Detran)")
         self.tree.heading("situacao", text="Situação")
 
-        self.tree.column("num", width=45, anchor="center")
-        self.tree.column("placa", width=95, anchor="center")
-        self.tree.column("renavam", width=125, anchor="center")
-        self.tree.column("licenciamento", width=150, anchor="e")
-        self.tree.column("ipva", width=150, anchor="e")
-        self.tree.column("situacao", width=150, anchor="center")
+        self.tree.column("num", width=40, anchor="center")
+        self.tree.column("placa", width=85, anchor="center")
+        self.tree.column("renavam", width=115, anchor="center")
+        self.tree.column("licenciamento", width=130, anchor="e")
+        self.tree.column("ipva", width=130, anchor="e")
+        self.tree.column("multas", width=130, anchor="e")
+        self.tree.column("situacao", width=145, anchor="center")
 
-        # Scrollbars para a Tabela
         scroll_y = ttk.Scrollbar(aba_tabela, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll_y.set)
-
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Tags de Cor para Linhas
-        self.tree.tag_configure("pendente", foreground="#718096")
-        self.tree.tag_configure("processando", background="#EBF8FF", foreground="#2B6CB0", font=("Segoe UI", 9, "bold"))
-        self.tree.tag_configure("com_debito", background="#FFF5F5", foreground="#C53030", font=("Segoe UI", 9, "bold"))
-        self.tree.tag_configure("sem_debito", background="#F0FFF4", foreground="#22543D")
+        # Menu de contexto no botão direito da tabela (Melhoria 8)
+        self.menu_contexto = tk.Menu(self.tree, tearoff=0)
+        self.menu_contexto.add_command(label="🔄 Reconsultar Veículo(s) Selecionado(s)", command=self._reconsultar_selecionado)
+        self.menu_contexto.add_command(label="⚠️ Reconsultar Apenas Falhas", command=self._reconsultar_apenas_falhas)
+        self.tree.bind("<Button-3>", self._exibir_menu_contexto)
 
         # Aba 2: Log Textual
-        aba_log = ttk.Frame(self.notebook, padding="6 6 6 6")
+        aba_log = ttk.Frame(self.notebook, padding="4 4 4 4")
         self.notebook.add(aba_log, text=" 📝 Log de Execução ")
 
         self.txt_log = tk.Text(
@@ -474,32 +1216,29 @@ class AppConsultaFrota:
         self.txt_log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll_log.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self._adicionar_log("Sistema iniciado. Aguardando carregamento da planilha.")
+        self._adicionar_log("Sistema iniciado (v2.1). Selecione uma planilha de frota para começar.")
 
-        # -------------------------------------------------------------------------
-        # 4. DASHBOARD DE MÉTRICAS E TOTAIS FINANCEIROS
-        # -------------------------------------------------------------------------
+        # 4. DASHBOARD DE MÉTRICAS (5 MINI-CARDS)
         frame_metricas = ttk.Frame(container)
-        frame_metricas.pack(fill=tk.X, pady=(0, 10))
+        frame_metricas.pack(fill=tk.X, pady=(0, 8))
 
-        # 4 Mini-Cards de Estatísticas
-        def criar_card_metrica(pai, titulo, variavel, cor_destaque):
-            card = tk.Frame(pai, bg="#FFFFFF", highlightbackground="#E2E8F0", highlightthickness=1, padx=12, pady=6)
-            card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
-            lbl_t = tk.Label(card, text=titulo, font=("Segoe UI", 8, "bold"), fg="#718096", bg="#FFFFFF")
+        def criar_card(pai, titulo, var, cor_l, cor_d):
+            card = tk.Frame(pai, bg="#FFFFFF", highlightbackground="#CBD5E1", highlightthickness=1, padx=10, pady=5)
+            card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=3)
+            lbl_t = tk.Label(card, text=titulo, font=("Segoe UI", 8, "bold"), fg="#64748B", bg="#FFFFFF")
             lbl_t.pack(anchor="w")
-            lbl_v = tk.Label(card, textvariable=variavel, font=("Segoe UI", 12, "bold"), fg=cor_destaque, bg="#FFFFFF")
+            lbl_v = tk.Label(card, textvariable=var, font=("Segoe UI", 11, "bold"), fg=cor_l, bg="#FFFFFF")
             lbl_v.pack(anchor="w")
+            self.cards_metricas.append((card, lbl_t, lbl_v, cor_l, cor_d))
             return card
 
-        criar_card_metrica(frame_metricas, "VEÍCULOS CONSULTADOS", self.var_metricas_veiculos, "#2B6CB0")
-        criar_card_metrica(frame_metricas, "TOTAL LICENCIAMENTO", self.var_metricas_lic, "#D69E2E")
-        criar_card_metrica(frame_metricas, "TOTAL IPVA EM ABERTO", self.var_metricas_ipva, "#E53E3E")
-        criar_card_metrica(frame_metricas, "TOTAL GERAL A PAGAR", self.var_metricas_total, "#2E7D32")
+        criar_card(frame_metricas, "VEÍCULOS", self.var_metricas_veiculos, "#1E3A8A", "#60A5FA")
+        criar_card(frame_metricas, "LICENCIAMENTO", self.var_metricas_lic, "#B45309", "#FBBF24")
+        criar_card(frame_metricas, "IPVA EM ABERTO", self.var_metricas_ipva, "#B91C1C", "#F87171")
+        criar_card(frame_metricas, "MULTAS DETRAN", self.var_metricas_multas, "#7C2D12", "#FB923C")
+        criar_card(frame_metricas, "TOTAL A PAGAR", self.var_metricas_total, "#15803D", "#4ADE80")
 
-        # -------------------------------------------------------------------------
         # 5. BARRA DE PROGRESSO E AÇÕES PÓS-PROCESSAMENTO
-        # -------------------------------------------------------------------------
         frame_rodape = ttk.Frame(container)
         frame_rodape.pack(fill=tk.X)
 
@@ -509,23 +1248,31 @@ class AppConsultaFrota:
             font=("Segoe UI", 9, "bold"),
             foreground="#1A365D"
         )
-        self.lbl_status.pack(anchor="w", pady=(0, 4))
+        self.lbl_status.pack(anchor="w", pady=(0, 3))
 
         self.barra_progresso = ttk.Progressbar(frame_rodape, mode="determinate")
-        self.barra_progresso.pack(fill=tk.X, pady=(0, 8))
+        self.barra_progresso.pack(fill=tk.X, pady=(0, 6))
 
-        # Botões de Acesso Rápido aos Resultados
         frame_botoes_finais = ttk.Frame(frame_rodape)
         frame_botoes_finais.pack(fill=tk.X)
 
         self.btn_abrir_excel = ttk.Button(
             frame_botoes_finais,
-            text="📊 Abrir Planilha Gerada no Excel",
+            text="📊 Abrir Planilha (Excel)",
             style="Secondary.TButton",
             state="disabled",
-            command=self._abrir_planilha_gerada
+            command=self._abrir_excel_gerado
         )
-        self.btn_abrir_excel.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_abrir_excel.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_abrir_pdf = ttk.Button(
+            frame_botoes_finais,
+            text="📄 Abrir Relatório (PDF)",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._abrir_pdf_gerado
+        )
+        self.btn_abrir_pdf.pack(side=tk.LEFT, padx=(0, 6))
 
         self.btn_abrir_pasta = ttk.Button(
             frame_botoes_finais,
@@ -534,306 +1281,557 @@ class AppConsultaFrota:
             state="disabled",
             command=self._abrir_pasta_destino
         )
-        self.btn_abrir_pasta.pack(side=tk.LEFT)
+        self.btn_abrir_pasta.pack(side=tk.LEFT, padx=(0, 6))
+
+        # Botão de Reconsulta de Falhas (Melhoria 8)
+        self.btn_reconsultar_falhas = ttk.Button(
+            frame_botoes_finais,
+            text="⚠️ Reconsultar Falhas",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._reconsultar_apenas_falhas
+        )
+        self.btn_reconsultar_falhas.pack(side=tk.LEFT)
 
     # ==================================================================================
-    # MÉTODOS DE CONTROLE E INTERAÇÃO
+    # INTERAÇÕES E LÓGICA DE CONTROLE
     # ==================================================================================
 
-    def _adicionar_log(self, mensagem: str):
-        """Insere uma linha com carimbo de hora no terminal de log."""
+    def _adicionar_log(self, msg: str):
+        """Insere linha formatada no log visual."""
         hora = datetime.now().strftime("%H:%M:%S")
-        self.txt_log.insert(tk.END, f"[{hora}] {mensagem}\n")
+        self.txt_log.insert(tk.END, f"[{hora}] {msg}\n")
         self.txt_log.see(tk.END)
 
+    def _exibir_menu_contexto(self, event):
+        """Abre menu de contexto com clique com botão direito na tabela."""
+        item = self.tree.identify_row(event.y)
+        if item:
+            if item not in self.tree.selection():
+                self.tree.selection_set(item)
+            self.menu_contexto.post(event.x_root, event.y_root)
+
+    def _alternar_todos_filtros(self):
+        """Marca ou desmarca todos os filtros de débito simultaneamente."""
+        estado_atual = self.var_ipva.get() and self.var_lic.get() and self.var_multas.get()
+        novo_estado = not estado_atual
+        self.var_ipva.set(novo_estado)
+        self.var_lic.set(novo_estado)
+        self.var_multas.set(novo_estado)
+
+    def _selecionar_pasta_destino(self):
+        """Permite ao usuário definir diretório de destino customizado (Melhoria 7)."""
+        pasta = filedialog.askdirectory(title="Selecione a Pasta de Destino dos Relatórios")
+        if pasta:
+            self.pasta_destino_var.set(pasta)
+            self.lbl_pasta_destino.config(
+                text=f"Destino: {pasta}",
+                foreground="#38BDF8" if self.modo_noturno else "#1D4ED8"
+            )
+            self._adicionar_log(f"Pasta de destino personalizada definida: {pasta}")
+
     def _selecionar_arquivo(self):
-        """Abre o explorador para escolher a planilha e a pré-carrega na tabela visual."""
+        """Lê o arquivo Excel com resiliência, validação e popula a grade inicial."""
         caminho = filedialog.askopenfilename(
-            title="Selecione a Planilha de Frota",
-            filetypes=[("Arquivos Excel (*.xlsx)", "*.xlsx")]
+            title="Selecione a Planilha de Veículos",
+            filetypes=[("Planilhas Excel (*.xlsx)", "*.xlsx")]
         )
         if not caminho:
             return
 
         try:
-            # Validação e Leitura prévia
-            df = pd.read_excel(caminho, dtype={"Placa": str, "RENAVAM": str})
-            if "Placa" not in df.columns or "RENAVAM" not in df.columns:
-                messagebox.showerror(
-                    "Formato Inválido",
-                    "A planilha selecionada deve conter obrigatoriamente as colunas:\n- Placa\n- RENAVAM"
-                )
-                return
-
-            if len(df) == 0:
-                messagebox.showwarning("Aviso", "A planilha selecionada não possui registros.")
-                return
-
+            df, col_p, col_r = FrotaDataProcessor.carregar_planilha(caminho)
             self.df_carregado = df
+            self.col_placa = col_p
+            self.col_renavam = col_r
             self.caminho_arquivo.set(caminho)
-            nome_arquivo = os.path.basename(caminho)
+
+            # Se não houver pasta customizada, usa a pasta da planilha como padrão
+            if not self.pasta_destino_var.get():
+                pasta_padrao = os.path.dirname(os.path.abspath(caminho))
+                self.pasta_destino_var.set(pasta_padrao)
+                self.lbl_pasta_destino.config(
+                    text=f"Destino: {pasta_padrao}",
+                    foreground="#4ADE80" if self.modo_noturno else "#15803D"
+                )
+
+            nome = os.path.basename(caminho)
             self.lbl_caminho.config(
-                text=f"Carregado: {nome_arquivo} ({len(df)} veículos)",
-                foreground="#22543D",
+                text=f"Carregado: {nome} ({len(df)} veículos) | Colunas: '{col_p}', '{col_r}'",
+                foreground="#4ADE80" if self.modo_noturno else "#15803D",
                 font=("Segoe UI", 9, "bold")
             )
 
-            # Preenche a Tabela Treeview com os veículos pendentes
-            self._popular_tabela(df)
+            self._popular_tabela(df, col_p, col_r)
 
-            # Atualiza métricas iniciais
+            # Reseta métricas
             self.var_metricas_veiculos.set(f"0 / {len(df)}")
             self.var_metricas_lic.set("R$ 0,00")
             self.var_metricas_ipva.set("R$ 0,00")
+            self.var_metricas_multas.set("R$ 0,00")
             self.var_metricas_total.set("R$ 0,00")
 
             self.btn_iniciar.config(state="normal")
-            self.var_status.set(f"Planilha pronta com {len(df)} veículos. Clique em 'Iniciar Consulta'.")
-            self._adicionar_log(f"Planilha '{nome_arquivo}' carregada com {len(df)} veículos.")
+            self.btn_reconsultar_falhas.config(state="disabled")
+            self.var_status.set(f"Planilha pronta com {len(df)} veículos higienizados. Clique em 'Iniciar Consulta'.")
+            self._adicionar_log(f"Planilha '{nome}' carregada e validada com sucesso ({len(df)} linhas).")
 
         except Exception as e:
-            messagebox.showerror("Erro de Leitura", f"Não foi possível ler o arquivo Excel:\n\n{str(e)}")
+            messagebox.showerror("Erro na Leitura da Planilha", str(e))
 
-    def _popular_tabela(self, df: pd.DataFrame):
-        """Limpa e insere os veículos carregados na Treeview com estado Pendente."""
+    def _popular_tabela(self, df: pd.DataFrame, col_p: str, col_r: str):
+        """Preenche a Treeview com os veículos da planilha e valida o formato das placas (Melhoria 4)."""
         for item in self.tree.get_children():
             self.tree.delete(item)
 
+        self.resultados_memoria = {}
+        self.indices_em_falha = []
+
         for idx, row in df.iterrows():
-            placa = str(row["Placa"]).strip().upper()
-            renavam = str(row["RENAVAM"]).strip()
+            placa = str(row[col_p]).strip().upper()
+            renavam = str(row[col_r]).strip()
+
+            placa_valida = bool(PADRAO_PLACA.match(placa))
+            if not placa_valida:
+                situacao_inicial = "Placa Inválida"
+                tag_inicial = "falha"
+                self.indices_em_falha.append(idx)
+            else:
+                situacao_inicial = "Aguardando..."
+                tag_inicial = "pendente"
+
+            self.resultados_memoria[idx] = {
+                "lic": "-",
+                "ipva": "-",
+                "multas": "-",
+                "situacao": situacao_inicial
+            }
+
             self.tree.insert(
                 "",
                 tk.END,
                 iid=str(idx),
-                values=(idx + 1, placa, renavam, "-", "-", "Aguardando..."),
-                tags=("pendente",)
+                values=(idx + 1, placa, renavam, "-", "-", "-", situacao_inicial),
+                tags=(tag_inicial,)
             )
 
+        if self.indices_em_falha:
+            self._adicionar_log(f"Aviso: {len(self.indices_em_falha)} placas com formato divergente do padrão nacional.")
+
     def _iniciar_processamento(self):
-        """Configura os botões e dispara a thread com o Selenium."""
+        """Inicia a consulta completa para todos os veículos da planilha."""
+        self._disparar_raspagem(indices_alvo=None)
+
+    def _reconsultar_selecionado(self):
+        """Reconsulta apenas o(s) veículo(s) selecionado(s) na tabela (Melhoria 8)."""
+        selecionados = self.tree.selection()
+        if not selecionados:
+            messagebox.showwarning("Seleção Necessária", "Selecione ao menos um veículo na tabela para reconsultar.")
+            return
+        indices = [int(i) for i in selecionados]
+        self._disparar_raspagem(indices_alvo=indices)
+
+    def _reconsultar_apenas_falhas(self):
+        """Reconsulta apenas as linhas com falha ou erro identificadas (Melhoria 8)."""
+        indices_falhas = []
+        for item_id in self.tree.get_children():
+            tags = self.tree.item(item_id, "tags")
+            if "falha" in tags:
+                indices_falhas.append(int(item_id))
+
+        if not indices_falhas:
+            messagebox.showinfo("Nenhuma Falha", "Não há veículos marcados com falha na tabela atual.")
+            return
+
+        self._disparar_raspagem(indices_alvo=indices_falhas)
+
+    def _disparar_raspagem(self, indices_alvo: list[int] | None = None):
+        """Valida pré-requisitos e lança a thread de raspagem para o lote especificado."""
+        if self.is_executando:
+            messagebox.showwarning("Aviso", "Já existe um processamento em andamento.")
+            return
+
         caminho = self.caminho_arquivo.get()
         if not caminho or not os.path.exists(caminho):
-            messagebox.showerror("Erro", "O arquivo selecionado não foi encontrado.")
+            messagebox.showerror("Aviso", "Selecione uma planilha válida antes de iniciar.")
+            return
+
+        c_ipva = self.var_ipva.get()
+        c_lic = self.var_lic.get()
+        c_multas = self.var_multas.get()
+
+        if not (c_ipva or c_lic or c_multas):
+            messagebox.showwarning("Filtro Necessário", "Selecione ao menos um débito para consulta (IPVA, Licenciamento ou Multas).")
             return
 
         self.is_executando = True
         self.cancelar_solicitado = False
 
-        # Ajuste dos botões de controle
         self.btn_iniciar.config(state="disabled")
         self.btn_selecionar.config(state="disabled")
+        self.btn_pasta_destino.config(state="disabled")
+        self.btn_reconsultar_falhas.config(state="disabled")
         self.btn_cancelar.config(state="normal")
         self.btn_abrir_excel.config(state="disabled")
+        self.btn_abrir_pdf.config(state="disabled")
         self.btn_abrir_pasta.config(state="disabled")
         self.barra_progresso["value"] = 0
 
-        # Altera para a aba da tabela automaticamente
         self.notebook.select(0)
 
-        # Inicia Threading
         thread = threading.Thread(
-            target=self._executar_raspagem_em_background,
-            args=(caminho, self.var_headless.get()),
+            target=self._executar_raspagem_thread,
+            args=(caminho, self.var_headless.get(), c_ipva, c_lic, c_multas, self.var_formato_exportacao.get(), indices_alvo),
             daemon=True
         )
         thread.start()
 
     def _cancelar_processamento(self):
-        """Solicita interrupção amigável do processo."""
-        if messagebox.askyesno("Confirmar Cancelamento", "Deseja realmente interromper as consultas ao finalizar o veículo atual?"):
+        """Solicita interrupção amigável da rotina de consulta."""
+        if messagebox.askyesno("Confirmar Cancelamento", "Deseja realmente interromper as consultas ao concluir o veículo atual?"):
             self.cancelar_solicitado = True
-            self.var_status.set("Interrupção solicitada! Concluindo consulta atual...")
+            self.var_status.set("Cancelamento solicitado! Finalizando o veículo atual e salvando parciais...")
             self.btn_cancelar.config(state="disabled")
-            self._adicionar_log("Solicitação de cancelamento enviada pelo usuário.")
+            self._adicionar_log("Solicitação de cancelamento registrada.")
 
-    def _executar_raspagem_em_background(self, caminho_arquivo: str, modo_headless: bool):
-        """Rotina assíncrona do Web Scraping."""
-        driver = None
-        pasta_destino = os.path.dirname(os.path.abspath(caminho_arquivo))
-        arquivo_saida = os.path.join(pasta_destino, "resultados_frota_ce.xlsx")
-        self.arquivo_saida_gerado = arquivo_saida
+    def _salvar_checkpoint(self, pasta_destino: str, df: pd.DataFrame):
+        """Salva arquivo de progresso incremental / checkpoint (Melhoria 6)."""
+        try:
+            qtd_total = len(df)
+            lics = [self.resultados_memoria.get(i, {}).get("lic", "-") for i in range(qtd_total)]
+            ipvas = [self.resultados_memoria.get(i, {}).get("ipva", "-") for i in range(qtd_total)]
+            multas = [self.resultados_memoria.get(i, {}).get("multas", "-") for i in range(qtd_total)]
 
+            df_chk = FrotaDataProcessor.consolidar_resultados(df, lics, ipvas, multas, qtd_total)
+            chk_path = os.path.join(pasta_destino, "~checkpoint_frota_ce.xlsx")
+            df_chk.to_excel(chk_path, index=False)
+        except Exception:
+            pass
+
+    def _executar_raspagem_thread(
+        self,
+        caminho_arquivo: str,
+        modo_headless: bool,
+        consultar_ipva: bool,
+        consultar_lic: bool,
+        consultar_multas: bool,
+        formato_export: str,
+        indices_alvo: list[int] | None = None
+    ):
+        """Rotina assíncrona de consulta, consolidação, salvamento incremental e exportação."""
+        pasta_destino = self.pasta_destino_var.get().strip() or os.path.dirname(os.path.abspath(caminho_arquivo))
+        os.makedirs(pasta_destino, exist_ok=True)
+
+        arquivo_excel = os.path.join(pasta_destino, "resultados_frota_ce.xlsx")
+        arquivo_pdf = os.path.join(pasta_destino, "resultados_frota_ce.pdf")
+
+        scraper = None
         try:
             df = self.df_carregado.copy()
-            total = len(df)
+            total_geral = len(df)
 
-            self.root.after(0, lambda: self.var_status.set("Inicializando navegador Chrome..."))
-            self._adicionar_log(f"Iniciando consultas para {total} veículos (Modo invisível={modo_headless})...")
+            # Define lote de trabalho
+            lista_indices = indices_alvo if indices_alvo is not None else list(df.index)
+            total_lote = len(lista_indices)
 
-            driver = configurar_driver(headless=modo_headless)
-            self.driver_ativo = driver
-            wait = WebDriverWait(driver, 15)
+            self.root.after(0, lambda: self.var_status.set("Inicializando motor Selenium / Chrome..."))
+            filtros_ativos = []
+            if consultar_ipva: filtros_ativos.append("IPVA (Sefaz)")
+            if consultar_lic: filtros_ativos.append("Licenciamento (Detran)")
+            if consultar_multas: filtros_ativos.append("Multas (Detran)")
 
-            licenciamentos = []
-            ipvas = []
-            soma_lic = 0.0
-            soma_ipva = 0.0
+            self._adicionar_log(f"Iniciando lote de {total_lote} veículos. Filtros: {', '.join(filtros_ativos)}.")
 
-            for index, row in df.iterrows():
+            scraper = FrotaScraperEngine(headless=modo_headless)
+            self.scraper_engine = scraper
+            scraper.iniciar()
+
+            for pos_i, index in enumerate(lista_indices):
                 if self.cancelar_solicitado:
-                    self._adicionar_log("Processamento interrompido pelo usuário.")
+                    self._adicionar_log("Processamento interrompido pelo usuário. Consolidando veículos já consultados...")
                     break
 
-                placa = str(row["Placa"]).strip().upper()
-                renavam = str(row["RENAVAM"]).strip()
-                pos = index + 1
-                progresso_pct = int(((pos - 1) / total) * 100)
+                row = df.loc[index]
+                placa = str(row[self.col_placa]).strip().upper()
+                renavam = str(row[self.col_renavam]).strip()
+                pos = pos_i + 1
+                pct = int((pos_i / total_lote) * 100)
 
-                # Marca linha atual como "Processando"
                 self.root.after(0, self._marcar_linha_processando, index, placa, renavam)
-                self.root.after(0, lambda p=pos, t=total, plc=placa, pct=progresso_pct: self._atualizar_progresso_ui(p, t, plc, pct))
+                self.root.after(0, lambda p=pos, t=total_lote, plc=placa, pc=pct: self._atualizar_progresso_ui(p, t, plc, pc))
 
-                # 1. Consulta Detran
-                self._adicionar_log(f"[{pos}/{total}] Consultando {placa} no Detran-CE...")
-                val_detran = consultar_detran(driver, wait, placa, renavam)
-                time.sleep(1.0)
+                val_detran_lic = "-"
+                val_detran_multas = "-"
+                val_sefaz_ipva = "-"
 
-                # 2. Consulta Sefaz
-                self._adicionar_log(f"[{pos}/{total}] Consultando {placa} na Sefaz-CE...")
-                val_sefaz = consultar_sefaz(driver, wait, placa, renavam)
-                time.sleep(1.0)
+                # 1. Consulta Detran-CE (Licenciamento e/ou Multas em sessão única)
+                if consultar_lic or consultar_multas:
+                    self._adicionar_log(f"[{pos}/{total_lote}] Consultando {placa} no Detran-CE...")
+                    val_detran_lic, val_detran_multas = scraper.consultar_detran(
+                        placa, renavam, consultar_lic, consultar_multas
+                    )
+                    time.sleep(0.5)
 
-                licenciamentos.append(val_detran)
-                ipvas.append(val_sefaz)
+                # 2. Consulta Sefaz-CE (IPVA)
+                if consultar_ipva:
+                    self._adicionar_log(f"[{pos}/{total_lote}] Consultando {placa} na Sefaz-CE...")
+                    val_sefaz_ipva = scraper.consultar_sefaz_ipva(placa, renavam)
+                    time.sleep(0.5)
 
-                # Atualiza somas
-                soma_lic += formatar_moeda_float(val_detran)
-                soma_ipva += formatar_moeda_float(val_sefaz)
-                total_geral = soma_lic + soma_ipva
+                # Salva na memória global de resultados
+                self.resultados_memoria[index] = {
+                    "lic": val_detran_lic,
+                    "ipva": val_sefaz_ipva,
+                    "multas": val_detran_multas
+                }
 
-                # Atualiza linha na tabela Treeview e Dashboard
+                # Recalcula somas globais
+                soma_lic = sum(formatar_moeda_float(d.get("lic", "0")) for d in self.resultados_memoria.values())
+                soma_ipva = sum(formatar_moeda_float(d.get("ipva", "0")) for d in self.resultados_memoria.values())
+                soma_multas = sum(formatar_moeda_float(d.get("multas", "0")) for d in self.resultados_memoria.values())
+                total_acumulado = soma_lic + soma_ipva + soma_multas
+                qtd_concluidos = sum(1 for d in self.resultados_memoria.values() if d.get("lic") != "-" or d.get("ipva") != "-")
+
                 self.root.after(
                     0,
                     self._atualizar_linha_tabela,
                     index,
-                    val_detran,
-                    val_sefaz,
-                    pos,
-                    total,
+                    val_detran_lic,
+                    val_sefaz_ipva,
+                    val_detran_multas,
+                    qtd_concluidos,
+                    total_geral,
                     soma_lic,
                     soma_ipva,
-                    total_geral
+                    soma_multas,
+                    total_acumulado
                 )
-                self._adicionar_log(f"  -> Concluído {placa} | Licenciamento: {val_detran} | IPVA: {val_sefaz}")
+                self._adicionar_log(f"  -> {placa} | Lic: {val_detran_lic} | IPVA: {val_sefaz_ipva} | Multas: {val_detran_multas}")
 
-            # Salva resultados parciais ou totais
-            qtd_concluidos = len(licenciamentos)
-            if qtd_concluidos > 0:
-                self.root.after(0, lambda: self.var_status.set("Gravando e formatando planilha final..."))
-                df_salvar = df.iloc[:qtd_concluidos].copy()
-                df_salvar["Licenciamento_CE"] = licenciamentos
-                df_salvar["IPVA_CE"] = ipvas
-                df_salvar["Data_Consulta"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                # Checkpoint a cada 5 veículos (Melhoria 6)
+                if (pos_i + 1) % 5 == 0:
+                    self._salvar_checkpoint(pasta_destino, df)
 
-                df_salvar.to_excel(arquivo_saida, index=False, engine="openpyxl")
-                formatar_planilha_saida(arquivo_saida)
+            # CONSOLIDAÇÃO E EXPORTAÇÃO
+            self.root.after(0, lambda: self.var_status.set("Consolidando dados e gerando relatórios..."))
 
-                self._adicionar_log(f"Planilha gravada com sucesso em: {arquivo_saida}")
-                self.root.after(0, self._concluir_sucesso, qtd_concluidos, total)
-            else:
-                self.root.after(0, lambda: self.var_status.set("Consulta cancelada antes do primeiro veículo."))
+            lics_final = [self.resultados_memoria.get(i, {}).get("lic", "-") for i in range(total_geral)]
+            ipvas_final = [self.resultados_memoria.get(i, {}).get("ipva", "-") for i in range(total_geral)]
+            multas_final = [self.resultados_memoria.get(i, {}).get("multas", "-") for i in range(total_geral)]
+
+            df_final = FrotaDataProcessor.consolidar_resultados(
+                df, lics_final, ipvas_final, multas_final, total_geral
+            )
+
+            totais_dict = {
+                "lic": formatar_float_moeda(sum(formatar_moeda_float(v) for v in lics_final)),
+                "ipva": formatar_float_moeda(sum(formatar_moeda_float(v) for v in ipvas_final)),
+                "multas": formatar_float_moeda(sum(formatar_moeda_float(v) for v in multas_final)),
+                "total": formatar_float_moeda(
+                    sum(formatar_moeda_float(v) for v in lics_final) +
+                    sum(formatar_moeda_float(v) for v in ipvas_final) +
+                    sum(formatar_moeda_float(v) for v in multas_final)
+                )
+            }
+
+            # Exporta Excel (com proteção PermissionError)
+            if formato_export in ["excel", "ambos"]:
+                caminho_excel_salvo = FrotaRelatorioExporter.exportar_excel(df_final, arquivo_excel)
+                self.arquivo_excel_gerado = caminho_excel_salvo
+                self._adicionar_log(f"Planilha Excel gravada: {caminho_excel_salvo}")
+
+            # Exporta PDF Paisagem (com proteção PermissionError)
+            if formato_export in ["pdf", "ambos"]:
+                caminho_pdf_salvo = FrotaRelatorioExporter.exportar_pdf(df_final, arquivo_pdf, totais_dict, filtros_ativos)
+                self.arquivo_pdf_gerado = caminho_pdf_salvo
+                self._adicionar_log(f"Relatório PDF gravado: {caminho_pdf_salvo}")
+
+            # Remove checkpoint temporário após conclusão bem-sucedida
+            chk_tmp = os.path.join(pasta_destino, "~checkpoint_frota_ce.xlsx")
+            if os.path.exists(chk_tmp):
+                try:
+                    os.remove(chk_tmp)
+                except Exception:
+                    pass
+
+            qtd_proc = sum(1 for d in self.resultados_memoria.values() if d.get("lic") != "-" or d.get("ipva") != "-")
+            self.root.after(0, self._concluir_sucesso, qtd_proc, total_geral)
 
         except Exception as e:
             self._adicionar_log(f"ERRO CRÍTICO: {str(e)}")
+            # Tenta salvar salvamento de emergência caso haja dados parciais
+            try:
+                self._salvar_checkpoint(pasta_destino, self.df_carregado)
+                self._adicionar_log("Dados parciais gravados no checkpoint com segurança.")
+            except Exception:
+                pass
             self.root.after(0, self._concluir_erro, str(e))
 
         finally:
             self.is_executando = False
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-            self.driver_ativo = None
+            if scraper:
+                scraper.fechar()
+            self.scraper_engine = None
             self.root.after(0, self._restaurar_controles)
 
     # ==================================================================================
-    # ATUALIZAÇÕES THREAD-SAFE DA INTERFACE (root.after)
+    # MÉTODOS DE ATUALIZAÇÃO THREAD-SAFE (root.after)
     # ==================================================================================
 
     def _marcar_linha_processando(self, idx: int, placa: str, renavam: str):
-        """Destaca visualmente na Treeview o veículo atualmente sob consulta."""
+        """Destaca o item atual na tabela visual."""
         item_id = str(idx)
         if self.tree.exists(item_id):
-            self.tree.item(item_id, values=(idx + 1, placa, renavam, "Consultando...", "Consultando...", "⏳ Processando"), tags=("processando",))
-            self.tree.see(item_id)
-
-    def _atualizar_linha_tabela(self, idx: int, lic: str, ipva: str, pos: int, total: int, soma_l: float, soma_i: float, total_g: float):
-        """Atualiza a linha do veículo com os valores finais e define cores (verde/vermelho)."""
-        item_id = str(idx)
-        if self.tree.exists(item_id):
-            tem_debito = (lic != "R$ 0,00" and lic != "-") or (ipva != "R$ 0,00" and ipva != "-")
-            tag = "com_debito" if tem_debito else "sem_debito"
-            situacao = "⚠️ Com Débitos" if tem_debito else "✔️ Sem Débitos"
-
-            valores_anteriores = self.tree.item(item_id, "values")
             self.tree.item(
                 item_id,
-                values=(valores_anteriores[0], valores_anteriores[1], valores_anteriores[2], lic, ipva, situacao),
+                values=(idx + 1, placa, renavam, "...", "...", "...", "⏳ Processando"),
+                tags=("processando",)
+            )
+            self.tree.see(item_id)
+
+    def _atualizar_linha_tabela(
+        self,
+        idx: int,
+        lic: str,
+        ipva: str,
+        multas: str,
+        pos: int,
+        total: int,
+        s_lic: float,
+        s_ipva: float,
+        s_multas: float,
+        total_g: float
+    ):
+        """Atualiza a linha do veículo diferenciando Débitos, Regular e Falhas (Melhoria 1)."""
+        item_id = str(idx)
+        if self.tree.exists(item_id):
+            tem_falha = any(
+                termo in str(v).lower()
+                for v in [lic, ipva, multas]
+                for termo in ["falha", "erro", "timeout", "inválid", "não localizado"]
+            )
+            tem_debito = (
+                formatar_moeda_float(lic) > 0 or
+                formatar_moeda_float(ipva) > 0 or
+                formatar_moeda_float(multas) > 0
+            )
+
+            if tem_falha:
+                tag = "falha"
+                situacao = "⚠️ Falha na Consulta"
+            elif tem_debito:
+                tag = "com_debito"
+                situacao = "⚠️ Com Débitos"
+            else:
+                tag = "sem_debito"
+                situacao = "✔️ Sem Débitos"
+
+            valores_antigos = self.tree.item(item_id, "values")
+            self.tree.item(
+                item_id,
+                values=(valores_antigos[0], valores_antigos[1], valores_antigos[2], lic, ipva, multas, situacao),
                 tags=(tag,)
             )
 
-        # Atualiza Mini-Cards de Estatísticas
+        # Atualiza Mini-Cards
         self.var_metricas_veiculos.set(f"{pos} / {total}")
-        self.var_metricas_lic.set(f"R$ {soma_l:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        self.var_metricas_ipva.set(f"R$ {soma_i:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        self.var_metricas_total.set(f"R$ {total_g:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        self.var_metricas_lic.set(formatar_float_moeda(s_lic))
+        self.var_metricas_ipva.set(formatar_float_moeda(s_ipva))
+        self.var_metricas_multas.set(formatar_float_moeda(s_multas))
+        self.var_metricas_total.set(formatar_float_moeda(total_g))
 
     def _atualizar_progresso_ui(self, pos: int, total: int, placa: str, pct: int):
-        """Atualiza rótulo de status e a barra de progresso."""
-        self.var_status.set(f"Consultando [{pos}/{total}]: Placa {placa}...")
+        """Atualiza a barra e a descrição de progresso."""
+        self.var_status.set(f"Consultando [{pos}/{total}]: Veículo {placa}...")
         self.barra_progresso.configure(value=pct)
 
     def _restaurar_controles(self):
-        """Restaura botões ao término ou interrupção."""
+        """Reabilita os botões da interface e verifica itens em falha (Melhoria 8)."""
         self.btn_selecionar.config(state="normal")
+        self.btn_pasta_destino.config(state="normal")
         self.btn_iniciar.config(state="normal")
         self.btn_cancelar.config(state="disabled")
 
-        if os.path.exists(self.arquivo_saida_gerado):
+        if self.arquivo_excel_gerado and os.path.exists(self.arquivo_excel_gerado):
             self.btn_abrir_excel.config(state="normal")
+        if self.arquivo_pdf_gerado and os.path.exists(self.arquivo_pdf_gerado):
+            self.btn_abrir_pdf.config(state="normal")
+        if self.arquivo_excel_gerado or self.arquivo_pdf_gerado:
             self.btn_abrir_pasta.config(state="normal")
 
-    def _concluir_sucesso(self, concluidos: int, total: int):
-        """Exibe feedback final e atualiza a barra."""
-        self.barra_progresso.configure(value=100)
-        msg_status = "Processamento concluído com sucesso!" if concluidos == total else f"Concluído parcialmente ({concluidos}/{total} veículos)."
-        self.var_status.set(msg_status)
+        # Verifica se há falhas na tabela para habilitar reconsulta rápida
+        tem_falhas = any("falha" in self.tree.item(item_id, "tags") for item_id in self.tree.get_children())
+        self.btn_reconsultar_falhas.config(state="normal" if tem_falhas else "disabled")
 
-        messagebox.showinfo(
-            "Consulta Concluída",
-            f"{msg_status}\n\nO arquivo 'resultados_frota_ce.xlsx' está pronto para visualização!"
-        )
+    def _concluir_sucesso(self, concluidos: int, total: int):
+        """Feedback de sucesso."""
+        self.barra_progresso.configure(value=100)
+        tem_falhas = any("falha" in self.tree.item(item_id, "tags") for item_id in self.tree.get_children())
+
+        if tem_falhas:
+            msg = f"Processamento concluído com alertas ({concluidos}/{total} processados)."
+        else:
+            msg = "Processamento concluído com 100% de sucesso!"
+
+        self.var_status.set(msg)
+
+        msg_corpo = f"{msg}\n\nArquivos gerados com sucesso:\n"
+        if self.arquivo_excel_gerado:
+            msg_corpo += f"- Planilha: {os.path.basename(self.arquivo_excel_gerado)}\n"
+        if self.arquivo_pdf_gerado:
+            msg_corpo += f"- Relatório PDF: {os.path.basename(self.arquivo_pdf_gerado)}\n"
+
+        if tem_falhas:
+            msg_corpo += "\n💡 Dica: Você pode clicar em '⚠️ Reconsultar Falhas' para tentar os veículos não concluídos."
+
+        messagebox.showinfo("Consulta Finalizada", msg_corpo)
 
     def _concluir_erro(self, erro: str):
-        """Exibe alerta de erro."""
+        """Feedback de falha."""
         self.var_status.set("Erro durante o processamento.")
-        messagebox.showerror("Erro", f"Ocorreu uma falha durante as consultas:\n\n{erro}")
+        messagebox.showerror(
+            "Erro de Execução",
+            f"Ocorreu uma falha durante o processo:\n\n{erro}\n\n"
+            f"Os dados consultados até o momento foram preservados no checkpoint."
+        )
 
-    def _abrir_planilha_gerada(self):
-        """Abre o arquivo Excel gerado diretamente no programa padrão do sistema."""
-        if os.path.exists(self.arquivo_saida_gerado):
+    def _abrir_excel_gerado(self):
+        """Abre a planilha Excel gerada."""
+        if self.arquivo_excel_gerado and os.path.exists(self.arquivo_excel_gerado):
             try:
-                os.startfile(self.arquivo_saida_gerado)
+                os.startfile(self.arquivo_excel_gerado)
             except Exception as e:
-                messagebox.showerror("Erro", f"Não foi possível abrir o arquivo:\n{e}")
+                messagebox.showerror("Erro", f"Não foi possível abrir o arquivo Excel:\n{e}")
         else:
-            messagebox.showwarning("Aviso", "O arquivo de resultados ainda não foi gerado.")
+            messagebox.showwarning("Aviso", "O arquivo Excel ainda não foi gerado.")
+
+    def _abrir_pdf_gerado(self):
+        """Abre o relatório PDF gerado."""
+        if self.arquivo_pdf_gerado and os.path.exists(self.arquivo_pdf_gerado):
+            try:
+                os.startfile(self.arquivo_pdf_gerado)
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível abrir o arquivo PDF:\n{e}")
+        else:
+            messagebox.showwarning("Aviso", "O relatório PDF ainda não foi gerado.")
 
     def _abrir_pasta_destino(self):
-        """Abre a pasta de destino no Windows Explorer com o arquivo selecionado."""
-        if os.path.exists(self.arquivo_saida_gerado):
+        """Abre a pasta contendo os arquivos no Windows Explorer."""
+        caminho_base = self.arquivo_excel_gerado or self.arquivo_pdf_gerado or self.pasta_destino_var.get()
+        if caminho_base and os.path.exists(caminho_base):
             try:
-                subprocess.Popen(f'explorer /select,"{os.path.normpath(self.arquivo_saida_gerado)}"')
+                if os.path.isfile(caminho_base):
+                    subprocess.Popen(f'explorer /select,"{os.path.normpath(caminho_base)}"')
+                else:
+                    os.startfile(caminho_base)
             except Exception:
-                pasta = os.path.dirname(self.arquivo_saida_gerado)
+                pasta = os.path.dirname(caminho_base) if os.path.isfile(caminho_base) else caminho_base
                 os.startfile(pasta)
         else:
-            messagebox.showwarning("Aviso", "A pasta de destino ainda não possui resultados gerados.")
+            messagebox.showwarning("Aviso", "A pasta de destino ainda não possui arquivos gerados.")
 
     def _ao_fechar_janela(self):
-        """Garante encerramento seguro ao fechar a janela."""
+        """Encerramento seguro e sem processos órfãos."""
         if self.is_executando:
             if not messagebox.askyesno(
                 "Consulta em Andamento",
@@ -841,21 +1839,21 @@ class AppConsultaFrota:
             ):
                 return
             self.cancelar_solicitado = True
-            if self.driver_ativo:
-                try:
-                    self.driver_ativo.quit()
-                except Exception:
-                    pass
+            if self.scraper_engine:
+                self.scraper_engine.fechar()
+
         self.root.destroy()
+        sys.exit(0)
 
 
 # ======================================================================================
-# PONTO DE ENTRADA DA APLICAÇÃO
+# PONTO DE ENTRADA PRINCIPAL
 # ======================================================================================
 
 def main():
+    ocultar_console()
     root = tk.Tk()
-    app = AppConsultaFrota(root)
+    app = AppConsultaFrotaGUI(root)
     root.mainloop()
 
 

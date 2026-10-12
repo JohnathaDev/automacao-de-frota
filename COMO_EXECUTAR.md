@@ -36,11 +36,14 @@ pip install -r requirements.txt
 > **Nota:** As bibliotecas `tkinter` e `threading` já vêm instaladas por padrão no Python no Windows.
 
 ### Passo 3: Executar o programa
-Para abrir a **Interface Gráfica (GUI)**:
+Para abrir a **Interface Gráfica (GUI) sem janela de console ou terminal ao fundo**:
+- **Opção 1 (Mais fácil):** Dê um duplo clique no atalho `executar_gui.bat`.
+- **Opção 2:** Dê um duplo clique no arquivo `automacao_frota_gui.pyw`.
+- **Opção 3 (Terminal):**
 ```bash
-python automacao_frota_gui.py
+pythonw automacao_frota_gui.py
 ```
-*(Ou dê um duplo clique no arquivo `automacao_frota_gui.py` no Windows Explorer).*
+*(Se executar com `python automacao_frota_gui.py`, o script oculta a janela preta de console automaticamente).*
 
 Caso deseje rodar a versão em **Linha de Comando (CLI)** sem interface gráfica:
 ```bash
@@ -48,11 +51,15 @@ python automacao_frota_ce.py
 ```
 
 ### Passo 4: Utilizar a Interface
-1. Clique no botão **📁 Selecionar Planilha de Frota (.xlsx)**.
-2. Escolha sua planilha de veículos.
-3. Escolha se deseja manter a opção *"Executar navegador em segundo plano (invisível)?"* marcada.
-4. Clique em **🚀 Iniciar Consulta de Débitos**.
-5. Ao concluir, a nova planilha `resultados_frota_ce.xlsx` será gerada automaticamente **na mesma pasta da planilha selecionada**.
+1. Clique no botão **📁 Selecionar Planilha (.xlsx)**. A planilha pode ter colunas em qualquer ordem e com campos extras.
+2. (Opcional) Clique em **📂 Pasta de Destino...** caso deseje salvar os relatórios em uma pasta diferente da planilha original.
+3. Em **Consultar Débitos**, marque quais débitos deseja pesquisar: `IPVA`, `Licenciamento` e/ou `Multas` (ou use o botão `Marcar/Desmarcar Todos`).
+4. Em **Exportação**, selecione se deseja salvar como `Excel (.xlsx)`, `PDF Paisagem (.pdf)` ou `Ambos`.
+5. Escolha se deseja manter o navegador em segundo plano (invisível).
+6. Clique em **▶️ Iniciar Consulta**.
+7. Acompanhe o progresso e o dashboard em tempo real. Se preferir trabalhar com tema escuro, clique em **🌙 Modo Noturno** no topo superior direito.
+8. Ao concluir, utilize os botões rápidos para **Abrir Planilha (Excel)**, **Abrir Relatório (PDF)** ou **Abrir Pasta de Destino**.
+9. Caso algum veículo tenha apresentado lentidão transitória dos portais governamentais, clique em **⚠️ Reconsultar Falhas** ou clique com o **botão direito do mouse** sobre o veículo na tabela para reprocessá-lo individualmente.
 
 ---
 

@@ -1,76 +1,61 @@
-# 🚗 Automação de Frota - Detran/Sefaz CE
+# 🚗 Automação de Frota - Detran/Sefaz CE (Versão 2.1)
 
-Sistema de web scraping e automação veicular com Interface Gráfica nativa (GUI) para consulta em lote de débitos de **Licenciamento (Detran-CE)** e **IPVA (Sefaz-CE)**.
+Sistema corporativo de web scraping e automação veicular com Interface Gráfica nativa (GUI) para consulta em lote de débitos de **Licenciamento (Detran-CE)**, **IPVA (Sefaz-CE)** e **Multas (Detran-CE)**.
 
 ---
 
-## 🌟 Funcionalidades
+## 🌟 Funcionalidades e Melhorias da Versão 2.1
 
-- **Interface Gráfica Amigável (`Tkinter`):** Desenvolvida para usuários finais, com seleção de arquivos, caixas de status, barra de progresso e logs em tempo real.
-- **Execução em Segundo Plano (`Threading`):** A interface não congela durante as requisições web.
-- **Portais Atendidos:**
-  - **Detran-CE:** Consulta automatizada de Licenciamento via Single Page Application (SPA).
-  - **Sefaz-CE:** Consulta automatizada de débitos de IPVA em aberto via Angular SPA.
-- **Espera Explícita Estrita:** Zero `time.sleep` no carregamento de páginas; utiliza exclusivamente `WebDriverWait` (15s) e `expected_conditions`.
-- **Tratamento Resiliente:** Captura de `TimeoutException` que assume automaticamente `R$ 0,00` para veículos sem pendências financeiras.
-- **Integridade de Dados:** Leitura de planilhas garantindo que o campo `RENAVAM` não perca os zeros à esquerda.
-- **Exportação Formatada:** Geração automática da planilha `resultados_frota_ce.xlsx` com cabeçalhos corporativos e bordas estilizadas via `openpyxl`.
+- **Prevenção de Falsos Negativos:** Diferenciação estrita entre veículos confirmados regulares (`R$ 0,00`) e falhas ou timeouts de comunicação (`Falha Detran` / `Falha Sefaz` / `Falha na Consulta`), evitando diagnósticos incorretos de frotas regulares.
+- **Proteção contra Arquivos Abertos (PermissionError):** Se a planilha Excel ou relatório PDF estiver aberto no Excel ou leitor no momento do salvamento, o sistema grava automaticamente com sufixo de data/hora (`_YYYYMMDD_HHMMSS`), impedindo a perda de dados.
+- **Garantia de 11 Dígitos no RENAVAM (`zfill`):** Sanitização automática de zeros à esquerda para planilhas que salvaram o campo como número.
+- **Validação Prévia e Limpeza de Dados:** Limpeza de linhas em branco e validação de placas (Mercosul e Tradicional) via expressão regular antes do envio aos portais governamentais.
+- **Salvamento Incremental (Checkpoint):** Gravação periódica de pontos de recuperação (`~checkpoint_frota_ce.xlsx`) a cada 5 veículos e salvamento garantido em caso de interrupção ou cancelamento prematuro.
+- **Pasta de Destino Personalizada:** Controle visual na interface gráfica para escolher a pasta onde os arquivos de relatório serão gerados.
+- **Reconsulta Inteligente (Falhas e Selecionados):** Botão rápido e menu de contexto (clique com botão direito) para reconsultar apenas os veículos que apresentaram falhas temporárias de conexão.
+- **Sessão Unificada no Detran-CE:** Consulta combinada de Licenciamento e Multas na mesma navegação por veículo.
+- **Exportação Multiformato:** Planilha Excel executiva e Relatório PDF em layout Paisagem (A4 Landscape) com cards de indicadores e paginação dinâmica.
+- **Modo Noturno (Dark Mode) Integrado:** Alternância visual em tempo real entre temas claro e escuro.
 
 ---
 
 ## 🛠️ Tecnologias Utilizadas
 
-- **Python 3.12+**
-- **Tkinter & ttk** (Interface gráfica nativa e temas)
-- **Selenium WebDriver** & **webdriver-manager** (Automação de navegador Chrome)
+- **Python 3.10+** (Compatível com 3.12 e 3.15)
+- **Tkinter & ttk** (Interface gráfica nativa com tema moderno)
+- **Selenium WebDriver** & **webdriver-manager** (Automação de navegador Google Chrome)
 - **Pandas** & **Openpyxl** (Manipulação e formatação executiva de planilhas Excel)
+- **ReportLab** (Geração de relatórios PDF executivos em Paisagem)
 - **Threading** (Processamento concorrente não bloqueante)
-- **PyInstaller** (Compilação para arquivo executável `.exe`)
+- **PyInstaller** (Compilação para executável autônomo `.exe`)
 
 ---
 
-## 🚀 Como Executar em Outro Dispositivo
+## 🚀 Como Executar
 
-Consulte o nosso guia passo a passo completo:
+Consulte o guia completo:
 👉 **[Guia Completo de Execução (COM e SEM Python)](COMO_EXECUTAR.md)**
 
-### Resumo Rápido (Dispositivo com Python):
-```bash
-# 1. Clone o repositório
-git clone https://github.com/JohnathaDev/automacao-de-frota.git
-cd automacao-de-frota
-
-# 2. Instale as dependências
-pip install -r requirements.txt
-
-# 3. Inicie o aplicativo com interface gráfica
-python automacao_frota_gui.py
-```
-
-### Resumo Rápido (Dispositivo sem Python - Gerar `.exe`):
-```bash
-# Compile em um computador com Python:
-pip install pyinstaller
-pyinstaller --noconsole --onefile automacao_frota_gui.py
-
-# O executável autônomo estará pronto em dist/automacao_frota_gui.exe
-# Basta copiá-lo para qualquer máquina Windows e dar duplo clique!
-```
+### Execução Rápida:
+- **Interface Gráfica:** Dê um duplo clique em `executar_gui.bat` ou `automacao_frota_gui.pyw`.
+- **Linha de Comando:** Dê um duplo clique em `executar_cli.bat` ou execute:
+  ```bash
+  python automacao_frota_ce.py
+  ```
 
 ---
 
 ## 📄 Estrutura da Planilha de Entrada
 
-O arquivo `.xlsx` selecionado pelo usuário deve conter as seguintes colunas:
+A planilha `.xlsx` selecionada pode conter qualquer número de colunas adicionais. Ela precisa apenas possuir colunas que façam referência à placa e ao RENAVAM:
 
-| Placa | RENAVAM |
-| :---: | :---: |
-| TII5F89 | 01458899249 |
-| THT5F69 | 01458894204 |
-| THV0A49 | 01434835143 |
+| Proprietário | Placa | RENAVAM | Chassi |
+| :---: | :---: | :---: | :---: |
+| Empresa Frota Ltda | TII5F89 | 01458899249 | 9BWZZZ377VT... |
+| Empresa Frota Ltda | THU5D09 | 01458895766 | 9BWZZZ377AB... |
 
 ---
 
 ## 📜 Licença
 
-Distribuído sob a licença MIT. Veja `LICENSE` para mais informações.
+Distribuído sob a licença MIT.

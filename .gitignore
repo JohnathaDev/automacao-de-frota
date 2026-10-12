@@ -1,7 +1,8 @@
-# Arquivos de Dados e Planilhas Excel
+# Arquivos de Dados e Relatórios Gerados
 *.xlsx
 *.xls
 *.csv
+*.pdf
 
 # Python
 __pycache__/
