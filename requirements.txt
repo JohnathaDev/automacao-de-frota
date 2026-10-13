@@ -1,6 +1,6 @@
-selenium>=4.15.0
-webdriver-manager>=4.0.0
-pandas>=2.0.0
-openpyxl>=3.1.0
-reportlab>=4.0.0
+selenium==4.51.0
+webdriver-manager==4.1.2
+pandas==3.0.6
+openpyxl==3.1.5
+reportlab==5.0.1
 pyinstaller>=6.0.0

@@ -37,13 +37,17 @@ from openpyxl.utils import get_column_letter
 from openpyxl import load_workbook
 
 # Geração de PDF Executivo em Paisagem (ReportLab)
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib import colors
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-)
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.pdfgen import canvas
+try:
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    )
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.pdfgen import canvas
+    REPORTLAB_DISPONIVEL = True
+except ImportError:
+    REPORTLAB_DISPONIVEL = False
 
 # Interface Gráfica
 import tkinter as tk
@@ -112,6 +116,34 @@ def formatar_float_moeda(valor: float) -> str:
         return formatado
     except Exception:
         return "R$ 0,00"
+
+
+def obter_estilo_financeiro(col_nome: str, valor_str: str) -> dict:
+    """
+    Aplica as regras corporativas de destaque financeiro (Excel e PDF):
+    - Valor > R$ 1.000,00: Negrito (bold)
+    - Valor > R$ 1.500,00: Negrito + Sublinhado (bold + underline)
+    - Licenciamento > R$ 188,96 (multa/taxa embutida): Fonte Vermelha (#DC2626)
+    Todas as regras são cumulativas caso haja sobreposição de características.
+    """
+    val_num = formatar_moeda_float(valor_str)
+    col_low = str(col_nome).lower()
+    val_clean = str(valor_str).strip()
+
+    is_fin = val_clean.startswith("R$") or any(
+        k in col_low for k in ["licenciamento", "ipva", "multas", "valor", "total"]
+    )
+    is_bold = is_fin and (val_num > 1000.00)
+    is_underline = is_fin and (val_num > 1500.00)
+    is_red = is_fin and ("licenciamento" in col_low) and (val_num > 188.96)
+
+    return {
+        "is_fin": is_fin,
+        "val_num": val_num,
+        "is_bold": is_bold,
+        "is_underline": is_underline,
+        "is_red": is_red
+    }
 
 
 # ======================================================================================
@@ -367,7 +399,51 @@ class FrotaScraperEngine:
             if alertas:
                 return ("Não Localizado" if consultar_lic else "-"), ("Não Localizado" if consultar_multas else "-")
 
-            # 4. Extração de MULTAS (se solicitado)
+            # Helper interno para fechar o modal compartilhado do Detran-CE
+            def fechar_modal_se_aberto():
+                try:
+                    fechar_btns = self.driver.find_elements(
+                        By.XPATH, "//*[@id='outros-servicos-modal']//button[contains(text(), 'Fechar') or contains(@class, 'close') or @data-dismiss='modal']"
+                    )
+                    for b in fechar_btns:
+                        if b.is_displayed():
+                            self._clicar_seguro(b)
+                            time.sleep(0.5)
+                            break
+                except Exception:
+                    pass
+
+            # 4. Extração de LICENCIAMENTO (Executado PRIMEIRO em modal limpo)
+            if consultar_lic:
+                try:
+                    link_lic_els = self.driver.find_elements(
+                        By.XPATH, "//*[contains(text(), 'Clique AQUI se deseja imprimir seu licenciamento.')]"
+                    )
+                    if not link_lic_els:
+                        val_lic = "R$ 0,00"
+                    else:
+                        self._clicar_seguro(link_lic_els[0])
+                        wait_modal = WebDriverWait(self.driver, 10)
+                        
+                        # Aguarda o modal carregar especificamente o conteúdo do Licenciamento
+                        wait_modal.until(EC.visibility_of_element_located((
+                            By.XPATH, "//*[@id='outros-servicos-modal']//*[contains(text(), 'licenciamento') or contains(text(), 'Licenciamento')]"
+                        )))
+                        time.sleep(0.8)
+
+                        el_total_lic = wait_modal.until(EC.visibility_of_element_located((
+                            By.XPATH, "//*[@id='outros-servicos-modal']//tr[contains(., 'TOTAL')]/td[last()]"
+                        )))
+                        texto_lic = el_total_lic.text.strip()
+                        val_lic = texto_lic if texto_lic else "R$ 0,00"
+                except TimeoutException:
+                    val_lic = "R$ 0,00"
+                except Exception:
+                    val_lic = "Falha Licenciamento"
+                finally:
+                    fechar_modal_se_aberto()
+
+            # 5. Extração de MULTAS (Executado DEPOIS com modal anterior fechado)
             if consultar_multas:
                 try:
                     sem_multas = self.driver.find_elements(
@@ -381,9 +457,14 @@ class FrotaScraperEngine:
                         )
                         if links_multa:
                             self._clicar_seguro(links_multa[0])
-                            time.sleep(1.2)
+                            wait_modal = WebDriverWait(self.driver, 10)
+                            
+                            wait_modal.until(EC.visibility_of_element_located((
+                                By.XPATH, "//*[@id='outros-servicos-modal']//table//tr"
+                            )))
+                            time.sleep(0.8)
 
-                            linhas_multa = self.driver.find_elements(By.XPATH, "//table//tr")
+                            linhas_multa = self.driver.find_elements(By.XPATH, "//*[@id='outros-servicos-modal']//table//tr")
                             soma_multas = 0.0
                             encontrou_multas = False
 
@@ -398,38 +479,21 @@ class FrotaScraperEngine:
                             if encontrou_multas:
                                 val_multas = formatar_float_moeda(soma_multas)
                             else:
-                                el_total = self.driver.find_elements(By.XPATH, "//tr[contains(., 'TOTAL')]/td[last()]")
+                                el_total = self.driver.find_elements(
+                                    By.XPATH, "//*[@id='outros-servicos-modal']//tr[contains(., 'TOTAL')]/td[last()]"
+                                )
                                 if el_total and "R$" in el_total[0].text:
                                     val_multas = el_total[0].text.strip()
                                 else:
                                     val_multas = "R$ 0,00"
                         else:
                             val_multas = "R$ 0,00"
+                except TimeoutException:
+                    val_multas = "R$ 0,00"
                 except Exception:
                     val_multas = "Falha Multas"
-
-            # 5. Extração de LICENCIAMENTO (se solicitado)
-            if consultar_lic:
-                try:
-                    # Espera curta de 4s para verificar se o botão de impressão existe
-                    wait_lic = WebDriverWait(self.driver, 4)
-                    link_lic = wait_lic.until(
-                        EC.presence_of_element_located((
-                            By.XPATH, "//*[contains(text(), 'Clique AQUI se deseja imprimir seu licenciamento.')]"
-                        ))
-                    )
-                    self._clicar_seguro(link_lic)
-
-                    modal_total = wait_lic.until(
-                        EC.visibility_of_element_located((By.XPATH, "//tr[contains(., 'TOTAL')]/td[last()]"))
-                    )
-                    texto_lic = modal_total.text.strip()
-                    val_lic = texto_lic if texto_lic else "R$ 0,00"
-                except TimeoutException:
-                    # Quando o link não aparece, o veículo está regular (R$ 0,00)
-                    val_lic = "R$ 0,00"
-                except Exception:
-                    val_lic = "Falha Licenciamento"
+                finally:
+                    fechar_modal_se_aberto()
 
             return val_lic, val_multas
 
@@ -501,37 +565,40 @@ class FrotaScraperEngine:
 # 3. EXPORTAÇÃO EXECUTIVA (EXCEL E PDF PAISAGEM COM REPORTLAB)
 # ======================================================================================
 
-class NumberedCanvas(canvas.Canvas):
-    """Canvas customizado para renderizar número total de páginas dinamicamente no rodapé."""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._saved_page_states = []
+if REPORTLAB_DISPONIVEL:
+    class NumberedCanvas(canvas.Canvas):
+        """Canvas customizado para renderizar número total de páginas dinamicamente no rodapé."""
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._saved_page_states = []
 
-    def showPage(self):
-        self._saved_page_states.append(dict(self.__dict__))
-        self._startPage()
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
 
-    def save(self):
-        num_pages = len(self._saved_page_states)
-        for state in self._saved_page_states:
-            self.__dict__.update(state)
-            self.draw_footer(num_pages)
-            canvas.Canvas.showPage(self)
-        canvas.Canvas.save(self)
+        def save(self):
+            num_pages = len(self._saved_page_states)
+            for state in self._saved_page_states:
+                self.__dict__.update(state)
+                self.draw_footer(num_pages)
+                canvas.Canvas.showPage(self)
+            canvas.Canvas.save(self)
 
-    def draw_footer(self, page_count):
-        self.saveState()
-        self.setFont("Helvetica", 8)
-        self.setFillColor(colors.HexColor("#64748B"))
-        largura, altura = landscape(A4)
-        texto_esq = "Automação de Frota CE v2.1 | Relatório Oficial Consolidado (Detran-CE & Sefaz-CE)"
-        texto_dir = f"Página {self._pageNumber} de {page_count}"
-        self.drawString(25, 18, texto_esq)
-        self.drawRightString(largura - 25, 18, texto_dir)
-        self.setStrokeColor(colors.HexColor("#E2E8F0"))
-        self.setLineWidth(0.5)
-        self.line(25, 28, largura - 25, 28)
-        self.restoreState()
+        def draw_footer(self, page_count):
+            self.saveState()
+            self.setFont("Helvetica", 8)
+            self.setFillColor(colors.HexColor("#64748B"))
+            largura, altura = landscape(A4)
+            texto_esq = "Automação de Frota CE v2.1 | Relatório Oficial Consolidado (Detran-CE & Sefaz-CE)"
+            texto_dir = f"Página {self._pageNumber} de {page_count}"
+            self.drawString(25, 18, texto_esq)
+            self.drawRightString(largura - 25, 18, texto_dir)
+            self.setStrokeColor(colors.HexColor("#E2E8F0"))
+            self.setLineWidth(0.5)
+            self.line(25, 28, largura - 25, 28)
+            self.restoreState()
+else:
+    NumberedCanvas = None
 
 
 class FrotaRelatorioExporter:
@@ -545,6 +612,9 @@ class FrotaRelatorioExporter:
         Retorna o caminho efetivo do arquivo gravado.
         """
         caminho_efetivo = caminho_arquivo
+        pasta_dir = os.path.dirname(os.path.abspath(caminho_efetivo))
+        if pasta_dir:
+            os.makedirs(pasta_dir, exist_ok=True)
         try:
             df.to_excel(caminho_efetivo, index=False, engine="openpyxl")
         except PermissionError:
@@ -577,15 +647,28 @@ class FrotaRelatorioExporter:
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
             for cell in row:
-                cell.font = fonte_linhas
-                cell.border = borda_fina
+                col_header = str(ws.cell(1, cell.column).value or "")
                 val_str = str(cell.value or "")
-                if val_str.startswith("R$"):
+                estilo = obter_estilo_financeiro(col_header, val_str)
+                cell.border = borda_fina
+
+                if estilo["is_fin"] and (estilo["val_num"] > 0 or val_str.startswith("R$")):
                     cell.alignment = alinhamento_direita
-                elif any(k in str(ws.cell(1, cell.column).value).lower() for k in ["placa", "renavam", "status", "data"]):
+                    cor_hex = "DC2626" if estilo["is_red"] else "000000"
+                    under = "single" if estilo["is_underline"] else None
+                    cell.font = Font(
+                        name="Calibri",
+                        size=10,
+                        bold=estilo["is_bold"],
+                        underline=under,
+                        color=cor_hex
+                    )
+                elif any(k in col_header.lower() for k in ["placa", "renavam", "status", "data"]):
                     cell.alignment = alinhamento_centro
+                    cell.font = fonte_linhas
                 else:
                     cell.alignment = alinhamento_esquerda
+                    cell.font = fonte_linhas
 
         for col in ws.columns:
             max_len = max(len(str(cell.value or '')) for cell in col)
@@ -610,7 +693,16 @@ class FrotaRelatorioExporter:
         Trata PermissionError salvando com timestamp para evitar perda de dados.
         Retorna o caminho efetivo do arquivo gravado.
         """
+        if not REPORTLAB_DISPONIVEL:
+            raise RuntimeError(
+                "A biblioteca 'reportlab' não está instalada no ambiente Python.\n"
+                "Para gerar relatórios em PDF, execute no terminal: pip install reportlab"
+            )
+
         caminho_efetivo = caminho_arquivo
+        pasta_dir = os.path.dirname(os.path.abspath(caminho_efetivo))
+        if pasta_dir:
+            os.makedirs(pasta_dir, exist_ok=True)
 
         def construir_story():
             styles = getSampleStyleSheet()
@@ -694,13 +786,24 @@ class FrotaRelatorioExporter:
                 linha_celulas = []
                 for col in colunas:
                     val = str(row[col] if pd.notna(row[col]) else "")
-                    if val.startswith("R$"):
+                    estilo = obter_estilo_financeiro(col, val)
+
+                    if estilo["is_fin"] and (estilo["val_num"] > 0 or val.startswith("R$")):
                         est = style_td_right
+                        val_html = val
+                        if estilo["is_underline"]:
+                            val_html = f"<u>{val_html}</u>"
+                        if estilo["is_bold"]:
+                            val_html = f"<b>{val_html}</b>"
+                        if estilo["is_red"]:
+                            val_html = f'<font color="#DC2626">{val_html}</font>'
+                        linha_celulas.append(Paragraph(val_html, est))
                     elif any(k in col.lower() for k in ["placa", "renavam", "status", "data"]):
                         est = style_td_center
+                        linha_celulas.append(Paragraph(val, est))
                     else:
                         est = style_td
-                    linha_celulas.append(Paragraph(val, est))
+                        linha_celulas.append(Paragraph(val, est))
                 table_data.append(linha_celulas)
 
             t_frota = Table(table_data, colWidths=[larg_col] * num_cols, repeatRows=1)
@@ -774,7 +877,8 @@ class AppConsultaFrotaGUI:
         self.var_multas = tk.BooleanVar(value=True)
 
         # Formato de Exportação ("excel", "pdf", "ambos")
-        self.var_formato_exportacao = tk.StringVar(value="ambos")
+        padrao_export = "ambos" if REPORTLAB_DISPONIVEL else "excel"
+        self.var_formato_exportacao = tk.StringVar(value=padrao_export)
 
         # Opções Gerais
         self.var_headless = tk.BooleanVar(value=True)
@@ -814,34 +918,41 @@ class AppConsultaFrotaGUI:
         self.root.protocol("WM_DELETE_WINDOW", self._ao_fechar_janela)
 
     def _aplicar_tema(self):
-        """Aplica tokens de cores e estilos para Modo Claro ou Modo Noturno."""
+        """Aplica tokens de cores e estilos suaves e elegantes para Modo Claro e Modo Noturno."""
         if self.modo_noturno:
-            bg_root = "#0F172A"       # Slate 900
-            bg_card = "#1E293B"       # Slate 800
-            border_card = "#334155"   # Slate 700
-            fg_title = "#F8FAFC"      # Slate 50
-            fg_sub = "#94A3B8"        # Slate 400
-            fg_text = "#E2E8F0"       # Slate 200
-            bg_tree = "#1E293B"
-            fg_tree = "#F1F5F9"
-            bg_tree_hd = "#334155"
-            fg_tree_hd = "#F8FAFC"
-            bg_sel = "#2563EB"
-            fg_sel = "#FFFFFF"
-            bg_tab = "#1E293B"
-            fg_tab = "#94A3B8"
-            bg_tab_sel = "#0F172A"
-            fg_tab_sel = "#38BDF8"
-            bg_log = "#0B0F19"
-            fg_log = "#38BDF8"
-            status_fg = "#60A5FA"
-            bg_btn_sec = "#334155"
-            fg_btn_sec = "#F8FAFC"
-            bg_btn_sec_act = "#475569"
-            bg_btn_muted = "#334155"
-            fg_btn_muted = "#F8FAFC"
-            bg_btn_theme = "#334155"
-            fg_btn_theme = "#F8FAFC"
+            bg_root = "#191B22"       # Fundo grafite escuro suave
+            bg_card = "#21242D"       # Superfície de cartões fosca e calma
+            border_card = "#2F333F"   # Borda sutil de baixo contraste
+            fg_title = "#E2E8F0"      # Título suave e nítido
+            fg_sub = "#8E99A8"        # Subtítulo com opacidade agradável
+            fg_text = "#CBD5E1"       # Texto claro confortável para leitura
+            bg_tree = "#21242D"       # Fundo da tabela integrado ao cartão
+            fg_tree = "#CBD5E1"
+            bg_tree_hd = "#2A2E3B"    # Cabeçalho da tabela discreto
+            fg_tree_hd = "#E2E8F0"
+            bg_sel = "#353D52"        # Destaque de seleção suave (azul ardósia)
+            fg_sel = "#F8FAFC"
+            bg_tab = "#1B1D24"
+            fg_tab = "#8E99A8"
+            bg_tab_sel = "#21242D"
+            fg_tab_sel = "#9BB3D6"    # Aba selecionada em tom ardósia pastel
+            bg_log = "#181A20"        # Terminal escuro com contraste repousante
+            fg_log = "#A5B4C7"        # Fonte mono cinza-azulada suave
+            status_fg = "#9BB3D6"     # Status informativo sutil
+            bg_btn_sec = "#2D323E"
+            fg_btn_sec = "#CBD5E1"
+            bg_btn_sec_act = "#393F4E"
+            bg_btn_muted = "#2A2E3A"
+            fg_btn_muted = "#CBD5E1"
+            bg_btn_theme = "#2A2E3A"
+            fg_btn_theme = "#CBD5E1"
+            # Botões de ação em tons sóbrios e não ofuscantes
+            bg_btn_pri = "#354A6B"
+            bg_btn_pri_act = "#2C3E5A"
+            bg_btn_act = "#2D5A43"
+            bg_btn_act_act = "#244936"
+            bg_btn_dng = "#6B3838"
+            bg_btn_dng_act = "#582E2E"
         else:
             bg_root = "#F0F4F8"
             bg_card = "#FFFFFF"
@@ -869,6 +980,12 @@ class AppConsultaFrotaGUI:
             fg_btn_muted = "#2D3748"
             bg_btn_theme = "#E2E8F0"
             fg_btn_theme = "#1A365D"
+            bg_btn_pri = "#2563EB"
+            bg_btn_pri_act = "#1D4ED8"
+            bg_btn_act = "#16A34A"
+            bg_btn_act_act = "#15803D"
+            bg_btn_dng = "#DC2626"
+            bg_btn_dng_act = "#B91C1C"
 
         self.root.configure(bg=bg_root)
 
@@ -895,31 +1012,31 @@ class AppConsultaFrotaGUI:
         self.style.configure(
             "Primary.TButton",
             font=("Segoe UI", 9, "bold"),
-            background="#2563EB",
+            background=bg_btn_pri,
             foreground="#FFFFFF",
             padding=(10, 6)
         )
-        self.style.map("Primary.TButton", background=[("active", "#1D4ED8"), ("disabled", "#94A3B8")])
+        self.style.map("Primary.TButton", background=[("active", bg_btn_pri_act), ("disabled", "#4B5563" if self.modo_noturno else "#94A3B8")])
 
         # Botão de Ação (Iniciar)
         self.style.configure(
             "Action.TButton",
             font=("Segoe UI", 10, "bold"),
-            background="#16A34A",
+            background=bg_btn_act,
             foreground="#FFFFFF",
             padding=(14, 7)
         )
-        self.style.map("Action.TButton", background=[("active", "#15803D"), ("disabled", "#94A3B8")])
+        self.style.map("Action.TButton", background=[("active", bg_btn_act_act), ("disabled", "#4B5563" if self.modo_noturno else "#94A3B8")])
 
         # Botão de Cancelar
         self.style.configure(
             "Danger.TButton",
             font=("Segoe UI", 9, "bold"),
-            background="#DC2626",
+            background=bg_btn_dng,
             foreground="#FFFFFF",
             padding=(10, 7)
         )
-        self.style.map("Danger.TButton", background=[("active", "#B91C1C"), ("disabled", "#94A3B8")])
+        self.style.map("Danger.TButton", background=[("active", bg_btn_dng_act), ("disabled", "#4B5563" if self.modo_noturno else "#94A3B8")])
 
         # Botões Secundários
         self.style.configure(
@@ -929,7 +1046,7 @@ class AppConsultaFrotaGUI:
             foreground=fg_btn_sec,
             padding=(9, 5)
         )
-        self.style.map("Secondary.TButton", background=[("active", bg_btn_sec_act), ("disabled", "#64748B")])
+        self.style.map("Secondary.TButton", background=[("active", bg_btn_sec_act), ("disabled", "#4B5563" if self.modo_noturno else "#64748B")])
 
         # Botão Muted (Alternar Filtros)
         self.style.configure(
@@ -973,14 +1090,14 @@ class AppConsultaFrotaGUI:
         )
         self.style.map("Treeview", background=[("selected", bg_sel)], foreground=[("selected", fg_sel)])
 
-        # Tags da Treeview (com tag 'falha' diferenciada)
+        # Tags da Treeview com cores suaves e descansadas
         if hasattr(self, "tree"):
             if self.modo_noturno:
-                self.tree.tag_configure("pendente", foreground="#94A3B8")
-                self.tree.tag_configure("processando", background="#1E3A8A", foreground="#93C5FD", font=("Segoe UI", 9, "bold"))
-                self.tree.tag_configure("com_debito", background="#450A0A", foreground="#FCA5A5", font=("Segoe UI", 9, "bold"))
-                self.tree.tag_configure("sem_debito", background="#064E3B", foreground="#6EE7B7")
-                self.tree.tag_configure("falha", background="#451A03", foreground="#FCD34D", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("pendente", foreground="#7D8799")
+                self.tree.tag_configure("processando", background="#232B3B", foreground="#9BB3D6", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("com_debito", background="#332225", foreground="#DDA0A8", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("sem_debito", background="#1E2B24", foreground="#90BE9F")
+                self.tree.tag_configure("falha", background="#332B1E", foreground="#D8B983", font=("Segoe UI", 9, "bold"))
             else:
                 self.tree.tag_configure("pendente", foreground="#718096")
                 self.tree.tag_configure("processando", background="#EBF8FF", foreground="#2B6CB0", font=("Segoe UI", 9, "bold"))
@@ -999,7 +1116,7 @@ class AppConsultaFrotaGUI:
         # Rótulos de Caminho
         if hasattr(self, "lbl_caminho"):
             if self.df_carregado is not None:
-                self.lbl_caminho.configure(foreground="#4ADE80" if self.modo_noturno else "#15803D")
+                self.lbl_caminho.configure(foreground="#90BE9F" if self.modo_noturno else "#15803D")
             else:
                 self.lbl_caminho.configure(foreground=fg_sub)
 
@@ -1084,7 +1201,7 @@ class AppConsultaFrotaGUI:
         self.lbl_pasta_destino = ttk.Label(
             linha_dest,
             text="Destino dos relatórios: Automático (mesma pasta da planilha)",
-            font=("Segoe UI", 8.5),
+            font=("Segoe UI", 8),
             foreground="#64748B",
             style="Card.TLabel"
         )
@@ -1124,10 +1241,24 @@ class AppConsultaFrotaGUI:
         rb_excel = ttk.Radiobutton(linha_opcoes, text="Excel (.xlsx)", value="excel", variable=self.var_formato_exportacao, style="Card.TRadiobutton")
         rb_excel.pack(side=tk.LEFT, padx=(0, 8))
 
-        rb_pdf = ttk.Radiobutton(linha_opcoes, text="PDF Paisagem (.pdf)", value="pdf", variable=self.var_formato_exportacao, style="Card.TRadiobutton")
+        rb_pdf = ttk.Radiobutton(
+            linha_opcoes,
+            text="PDF Paisagem (.pdf)",
+            value="pdf",
+            variable=self.var_formato_exportacao,
+            style="Card.TRadiobutton",
+            state="normal" if REPORTLAB_DISPONIVEL else "disabled"
+        )
         rb_pdf.pack(side=tk.LEFT, padx=(0, 8))
 
-        rb_ambos = ttk.Radiobutton(linha_opcoes, text="Ambos (Excel + PDF)", value="ambos", variable=self.var_formato_exportacao, style="Card.TRadiobutton")
+        rb_ambos = ttk.Radiobutton(
+            linha_opcoes,
+            text="Ambos (Excel + PDF)",
+            value="ambos",
+            variable=self.var_formato_exportacao,
+            style="Card.TRadiobutton",
+            state="normal" if REPORTLAB_DISPONIVEL else "disabled"
+        )
         rb_ambos.pack(side=tk.LEFT, padx=(0, 15))
 
         self.chk_headless = ttk.Checkbutton(
@@ -1232,11 +1363,11 @@ class AppConsultaFrotaGUI:
             self.cards_metricas.append((card, lbl_t, lbl_v, cor_l, cor_d))
             return card
 
-        criar_card(frame_metricas, "VEÍCULOS", self.var_metricas_veiculos, "#1E3A8A", "#60A5FA")
-        criar_card(frame_metricas, "LICENCIAMENTO", self.var_metricas_lic, "#B45309", "#FBBF24")
-        criar_card(frame_metricas, "IPVA EM ABERTO", self.var_metricas_ipva, "#B91C1C", "#F87171")
-        criar_card(frame_metricas, "MULTAS DETRAN", self.var_metricas_multas, "#7C2D12", "#FB923C")
-        criar_card(frame_metricas, "TOTAL A PAGAR", self.var_metricas_total, "#15803D", "#4ADE80")
+        criar_card(frame_metricas, "VEÍCULOS", self.var_metricas_veiculos, "#1E3A8A", "#9BB3D6")
+        criar_card(frame_metricas, "LICENCIAMENTO", self.var_metricas_lic, "#B45309", "#D8B983")
+        criar_card(frame_metricas, "IPVA EM ABERTO", self.var_metricas_ipva, "#B91C1C", "#DDA0A8")
+        criar_card(frame_metricas, "MULTAS DETRAN", self.var_metricas_multas, "#7C2D12", "#DBA392")
+        criar_card(frame_metricas, "TOTAL A PAGAR", self.var_metricas_total, "#15803D", "#90BE9F")
 
         # 5. BARRA DE PROGRESSO E AÇÕES PÓS-PROCESSAMENTO
         frame_rodape = ttk.Frame(container)
@@ -1326,7 +1457,7 @@ class AppConsultaFrotaGUI:
             self.pasta_destino_var.set(pasta)
             self.lbl_pasta_destino.config(
                 text=f"Destino: {pasta}",
-                foreground="#38BDF8" if self.modo_noturno else "#1D4ED8"
+                foreground="#9BB3D6" if self.modo_noturno else "#1D4ED8"
             )
             self._adicionar_log(f"Pasta de destino personalizada definida: {pasta}")
 
@@ -1352,13 +1483,13 @@ class AppConsultaFrotaGUI:
                 self.pasta_destino_var.set(pasta_padrao)
                 self.lbl_pasta_destino.config(
                     text=f"Destino: {pasta_padrao}",
-                    foreground="#4ADE80" if self.modo_noturno else "#15803D"
+                    foreground="#90BE9F" if self.modo_noturno else "#15803D"
                 )
 
             nome = os.path.basename(caminho)
             self.lbl_caminho.config(
                 text=f"Carregado: {nome} ({len(df)} veículos) | Colunas: '{col_p}', '{col_r}'",
-                foreground="#4ADE80" if self.modo_noturno else "#15803D",
+                foreground="#90BE9F" if self.modo_noturno else "#15803D",
                 font=("Segoe UI", 9, "bold")
             )
 
@@ -1852,9 +1983,21 @@ class AppConsultaFrotaGUI:
 
 def main():
     ocultar_console()
-    root = tk.Tk()
-    app = AppConsultaFrotaGUI(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        app = AppConsultaFrotaGUI(root)
+        root.mainloop()
+    except Exception as e:
+        import traceback
+        err_msg = f"Falha ao iniciar o aplicativo:\n\n{e}\n\nDetalhes:\n{traceback.format_exc()}"
+        try:
+            from tkinter import messagebox
+            root_err = tk.Tk()
+            root_err.withdraw()
+            messagebox.showerror("Erro de Inicialização", err_msg)
+            root_err.destroy()
+        except Exception:
+            print(err_msg, file=sys.stderr)
 
 
 if __name__ == "__main__":
