@@ -26,6 +26,7 @@ from core.data_processor import (
     FrotaDataProcessor,
     formatar_moeda_float,
     formatar_float_moeda,
+    calcular_total_a_pagar_veiculo,
     obter_estilo_financeiro,
     obter_ultimo_dia_util_mes,
     obter_proximo_dia_util,
@@ -97,8 +98,10 @@ class JanelaDownloadBoletos(tk.Toplevel):
 
         self.downloader: FrotaBoletoDownloader | None = None
         self.is_baixando = False
+        self.is_pausado = False
         self.cancelar_solicitado = False
         self.itens_boletos: list[dict] = []
+        self.tarefas_executadas_sucesso: set[tuple[int, str]] = set()
 
         self._aplicar_estilo()
         self._identificar_debitos()
@@ -326,6 +329,15 @@ class JanelaDownloadBoletos(tk.Toplevel):
         )
         self.btn_iniciar_dl.pack(side=tk.LEFT, padx=(0, 8))
 
+        self.btn_pausar_dl = ttk.Button(
+            frame_botoes,
+            text="⏸️ Pausar",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._alternar_pausa_downloads
+        )
+        self.btn_pausar_dl.pack(side=tk.LEFT, padx=(0, 8))
+
         self.btn_cancelar_dl = ttk.Button(
             frame_botoes,
             text="⏹️ Cancelar",
@@ -370,6 +382,21 @@ class JanelaDownloadBoletos(tk.Toplevel):
             item["var_lic"].set(False)
             item["var_ipva"].set(False)
 
+    def _alternar_pausa_downloads(self):
+        """Pausa ou retoma a execução dos downloads."""
+        if not self.is_baixando:
+            return
+        if not self.is_pausado:
+            self.is_pausado = True
+            self.btn_pausar_dl.config(text="▶️ Retomar")
+            self.var_progresso_txt.set("⏸️ Downloads pausados. Clique em Retomar para prosseguir...")
+            logger.info("Downloads pausados pelo usuário.")
+        else:
+            self.is_pausado = False
+            self.btn_pausar_dl.config(text="⏸️ Pausar")
+            self.var_progresso_txt.set("▶️ Retomando downloads...")
+            logger.info("Downloads retomados pelo usuário.")
+
     def _iniciar_downloads(self):
         """Inicia a rotina em thread separada para download sequencial seguro com Chrome."""
         tarefas = []
@@ -384,8 +411,12 @@ class JanelaDownloadBoletos(tk.Toplevel):
             return
 
         self.is_baixando = True
+        self.is_pausado = False
         self.cancelar_solicitado = False
+        self.tarefas_executadas_sucesso.clear()
+
         self.btn_iniciar_dl.config(state="disabled")
+        self.btn_pausar_dl.config(state="normal", text="⏸️ Pausar")
         self.btn_cancelar_dl.config(state="normal")
         self.btn_abrir_pasta_boletos.config(state="disabled")
         self.barra_progresso["value"] = 0
@@ -394,49 +425,88 @@ class JanelaDownloadBoletos(tk.Toplevel):
         thread.start()
 
     def _executar_downloads_thread(self, tarefas: list[tuple[dict, str]]):
-        total = len(tarefas)
+        total_geral = len(tarefas)
         self.downloader = FrotaBoletoDownloader(self.pasta_destino_base, headless=self.modo_headless)
 
         try:
             self.downloader.iniciar()
-            sucessos = 0
+            fila_pendentes = list(tarefas)
+            rodada = 1
 
-            for idx, (item, tipo) in enumerate(tarefas):
-                if self.cancelar_solicitado:
-                    break
+            while fila_pendentes and not self.cancelar_solicitado:
+                if rodada > 1:
+                    msg_rodada = f"Reiniciando download para {len(fila_pendentes)} boletos pendentes (Tentativa {rodada})..."
+                    self.after(0, lambda m=msg_rodada: self.var_progresso_txt.set(m))
+                    logger.info(msg_rodada)
+                    # Reinicia a sessão do navegador para limpar abas residuais ou falhas de rede
+                    try:
+                        self.downloader.reiniciar_sessao()
+                    except Exception as err:
+                        logger.warning(f"Aviso ao reiniciar sessão do downloader: {err}")
+                    time.sleep(2.0)
 
-                placa = item["placa"]
-                renavam = item["renavam"]
-                lbl_tipo = "Licenciamento" if tipo == "lic" else "IPVA"
-                pos = idx + 1
-                pct = int((idx / total) * 100)
+                falhas_desta_rodada = []
 
-                self.after(0, lambda p=pos, t=total, plc=placa, tp=lbl_tipo, pc=pct: self._atualizar_status_ui(p, t, plc, tp, pc))
+                for item, tipo in fila_pendentes:
+                    if self.cancelar_solicitado:
+                        break
 
-                # Atualiza label na linha
-                if item["lbl_status"]:
-                    self.after(0, lambda lbl=item["lbl_status"], tp=lbl_tipo: lbl.config(
-                        text=f"Baixando {tp}...", foreground="#2563EB"
-                    ))
+                    # Suporte à pausa
+                    while self.is_pausado and not self.cancelar_solicitado:
+                        time.sleep(0.3)
+                    if self.cancelar_solicitado:
+                        break
 
-                if tipo == "lic":
-                    sucesso, msg = self.downloader.baixar_boleto_licenciamento(placa, renavam)
-                else:
-                    sucesso, msg = self.downloader.baixar_dae_ipva(placa, renavam)
+                    placa = item["placa"]
+                    renavam = item["renavam"]
+                    lbl_tipo = "Licenciamento" if tipo == "lic" else "IPVA"
 
-                if sucesso:
-                    sucessos += 1
-                    cor = "#15803D"
-                    txt = f"{lbl_tipo}: Concluído"
-                else:
-                    cor = "#DC2626"
-                    txt = f"{lbl_tipo}: Erro"
+                    concluidos = len(self.tarefas_executadas_sucesso)
+                    pct = int((concluidos / total_geral) * 100)
+                    self.after(0, lambda c=concluidos, t=total_geral, plc=placa, tp=lbl_tipo, pc=pct, r=rodada:
+                        self._atualizar_status_ui(c, t, plc, tp, pc, r)
+                    )
 
-                if item["lbl_status"]:
-                    self.after(0, lambda lbl=item["lbl_status"], t=txt, c=cor: lbl.config(text=t, foreground=c))
+                    # Atualiza status na linha da tabela
+                    if item["lbl_status"]:
+                        txt_tentativa = f"Baixando {lbl_tipo}..." if rodada == 1 else f"Baixando {lbl_tipo} (T{rodada})..."
+                        self.after(0, lambda lbl=item["lbl_status"], t=txt_tentativa: lbl.config(
+                            text=t, foreground="#2563EB"
+                        ))
 
-            # Finalização
-            self.after(0, lambda s=sucessos, t=total: self._finalizar_downloads_ui(s, t))
+                    # Executa a geração e salvamento do boleto
+                    if tipo == "lic":
+                        sucesso, msg = self.downloader.baixar_boleto_licenciamento(placa, renavam)
+                    else:
+                        sucesso, msg = self.downloader.baixar_dae_ipva(placa, renavam)
+
+                    if sucesso:
+                        self.tarefas_executadas_sucesso.add((item["index"], tipo))
+                        cor = "#15803D"
+                        txt = f"{lbl_tipo}: Concluído"
+                    else:
+                        falhas_desta_rodada.append((item, tipo))
+                        if not self.cancelar_solicitado:
+                            cor = "#D97706"
+                            txt = f"{lbl_tipo}: Erro (Repetirá)"
+                        else:
+                            cor = "#DC2626"
+                            txt = f"{lbl_tipo}: Erro"
+
+                    if item["lbl_status"]:
+                        self.after(0, lambda lbl=item["lbl_status"], t=txt, c=cor: lbl.config(text=t, foreground=c))
+
+                    time.sleep(0.5)
+
+                fila_pendentes = falhas_desta_rodada
+                rodada += 1
+
+                if fila_pendentes and not self.cancelar_solicitado:
+                    time.sleep(1.5)
+
+            # Finalização (após concluir 100% ou se tiver sido cancelado)
+            sucessos = len(self.tarefas_executadas_sucesso)
+            self.after(0, lambda s=sucessos, t=total_geral: self._finalizar_downloads_ui(s, t))
 
         except Exception as e:
             logger.error(f"Erro fatal no lote de downloads: {e}")
@@ -445,22 +515,25 @@ class JanelaDownloadBoletos(tk.Toplevel):
             if self.downloader:
                 self.downloader.fechar()
             self.is_baixando = False
+            self.is_pausado = False
 
-    def _atualizar_status_ui(self, pos: int, total: int, placa: str, tipo: str, pct: int):
-        self.var_progresso_txt.set(f"Baixando boleto ({pos}/{total}): {placa} - {tipo}...")
+    def _atualizar_status_ui(self, concluidos: int, total: int, placa: str, tipo: str, pct: int, rodada: int = 1):
+        info_rodada = f" [Tentativa {rodada}]" if rodada > 1 else ""
+        self.var_progresso_txt.set(f"Baixando ({concluidos}/{total}){info_rodada}: {placa} - {tipo}...")
         self.barra_progresso["value"] = pct
 
     def _finalizar_downloads_ui(self, sucessos: int, total: int):
         self.barra_progresso["value"] = 100
         self.btn_iniciar_dl.config(state="normal")
+        self.btn_pausar_dl.config(state="disabled", text="⏸️ Pausar")
         self.btn_cancelar_dl.config(state="disabled")
         self.btn_abrir_pasta_boletos.config(state="normal")
 
         if self.cancelar_solicitado:
             self.var_progresso_txt.set(f"Downloads interrompidos! {sucessos} de {total} boletos baixados.")
-            messagebox.showinfo("Cancelado", f"Processamento interrompido. Foram salvos {sucessos} boletos.")
+            messagebox.showinfo("Cancelado", f"Processamento interrompido.\n\nForam salvos {sucessos} de {total} boletos selecionados.")
         else:
-            self.var_progresso_txt.set(f"Download concluído com sucesso! {sucessos} de {total} boletos salvos.")
+            self.var_progresso_txt.set(f"🎉 Todos os downloads foram concluídos com sucesso! ({sucessos}/{total})")
             if sys.platform == "win32":
                 try:
                     import winsound
@@ -468,15 +541,18 @@ class JanelaDownloadBoletos(tk.Toplevel):
                 except Exception:
                     pass
             messagebox.showinfo(
-                "Boletos Baixados",
-                f"Foram baixados {sucessos} de {total} boletos selecionados com sucesso!\n\n"
+                "Downloads Concluídos",
+                f"Todos os {total} boletos da lista foram baixados e salvos com sucesso na pasta de destino!\n\n"
                 f"Pasta de destino:\n{self.downloader.pasta_destino_final if self.downloader else self.pasta_destino_base}"
             )
 
     def _cancelar_downloads(self):
         if messagebox.askyesno("Cancelar", "Deseja interromper o download dos boletos restantes?"):
             self.cancelar_solicitado = True
+            self.is_pausado = False
             self.btn_cancelar_dl.config(state="disabled")
+            self.btn_pausar_dl.config(state="disabled")
+            self.var_progresso_txt.set("Interrompendo downloads... Aguarde finalizar tarefa em andamento.")
 
     def _abrir_pasta_boletos(self):
         caminho = self.downloader.pasta_destino_final if self.downloader else self.pasta_destino_base
@@ -701,12 +777,16 @@ class AppConsultaFrotaGUI:
                 self.tree.tag_configure("com_debito", background="#332225", foreground="#DDA0A8", font=("Segoe UI", 9, "bold"))
                 self.tree.tag_configure("sem_debito", background="#1E2B24", foreground="#90BE9F")
                 self.tree.tag_configure("falha", background="#332B1E", foreground="#D8B983", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("restricao", background="#382618", foreground="#FDBA74", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("pago", background="#1E2B24", foreground="#86EFAC")
             else:
                 self.tree.tag_configure("pendente", foreground="#718096")
                 self.tree.tag_configure("processando", background="#EBF8FF", foreground="#2B6CB0", font=("Segoe UI", 9, "bold"))
                 self.tree.tag_configure("com_debito", background="#FFF5F5", foreground="#C53030", font=("Segoe UI", 9, "bold"))
                 self.tree.tag_configure("sem_debito", background="#F0FFF4", foreground="#276749")
                 self.tree.tag_configure("falha", background="#FEF3C7", foreground="#B45309", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("restricao", background="#FFEDD5", foreground="#C2410C", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("pago", background="#DCFCE7", foreground="#166534")
 
         if hasattr(self, "txt_logs"):
             self.txt_logs.configure(bg=bg_log, fg=fg_log, insertbackground=fg_log)
@@ -920,17 +1000,18 @@ class AppConsultaFrotaGUI:
 
         ttk.Button(frame_busca, text="✖ Limpar Busca", style="Muted.TButton", command=lambda: self.var_busca.set("")).pack(side=tk.LEFT)
 
-        colunas = ("num", "placa", "renavam", "licenciamento", "ipva", "multas", "situacao")
+        colunas = ("num", "placa", "renavam", "licenciamento", "ipva", "multas", "total_pagar", "situacao")
         self.tree = ttk.Treeview(aba_tabela, columns=colunas, show="headings", selectmode="extended")
 
         cabecalhos_nomes = [
             ("num", "Item", 45, "center"),
             ("placa", "Placa", 85, "center"),
             ("renavam", "RENAVAM", 115, "center"),
-            ("licenciamento", "Licenciamento", 130, "e"),
-            ("ipva", "IPVA", 130, "e"),
-            ("multas", "Multas", 130, "e"),
-            ("situacao", "Situação", 145, "center"),
+            ("licenciamento", "Licenciamento", 125, "e"),
+            ("ipva", "IPVA", 125, "e"),
+            ("multas", "Multas", 125, "e"),
+            ("total_pagar", "Total a Pagar", 125, "e"),
+            ("situacao", "Situação", 135, "center"),
         ]
 
         for col_id, titulo, larg, alinhamento in cabecalhos_nomes:
@@ -1158,7 +1239,7 @@ class AppConsultaFrotaGUI:
                 "",
                 "end",
                 iid=str(idx),
-                values=(idx + 1, placa, renavam, "-", "-", "-", "Aguardando"),
+                values=(idx + 1, placa, renavam, "-", "-", "-", "-", "Aguardando"),
                 tags=(tag,)
             )
 
@@ -1175,13 +1256,28 @@ class AppConsultaFrotaGUI:
             dados_mem = self.resultados_memoria.get(idx, {})
 
             situacao = "Aguardando"
+            total_str = "-"
             if idx in self.resultados_memoria:
                 lic = dados_mem.get("lic", "-")
                 ipva = dados_mem.get("ipva", "-")
                 multas = dados_mem.get("multas", "-")
-                soma = formatar_moeda_float(lic) + formatar_moeda_float(ipva) + formatar_moeda_float(multas)
-                if soma > 0: situacao = "Com Débitos"
-                else: situacao = "Sem Débitos"
+                m_av = dados_mem.get("multas_a_vencer")
+                tem_falha = any("falha" in str(v).lower() or "erro" in str(v).lower() for v in [lic, ipva, multas])
+                total_real = calcular_total_a_pagar_veiculo(lic, ipva, multas, m_av)
+                total_str = formatar_float_moeda(total_real)
+                tag_linha = "pendente"
+                if tem_falha:
+                    situacao = "Falha na Consulta"
+                    tag_linha = "falha"
+                elif "restriç" in str(lic).lower() or "restric" in str(lic).lower():
+                    situacao = "Com Débitos / Restrição" if total_real > 0 else "Restrição"
+                    tag_linha = "restricao"
+                elif total_real > 0:
+                    situacao = "Com Débitos"
+                    tag_linha = "com_debito"
+                else:
+                    situacao = "Sem Débitos"
+                    tag_linha = "pago" if str(lic).strip().upper() == "PAGO" else "sem_debito"
 
             corresponde = (not termo) or (termo in placa) or (termo in renavam) or (termo in situacao.upper())
 
@@ -1195,8 +1291,8 @@ class AppConsultaFrotaGUI:
                         "",
                         "end",
                         iid=str(idx),
-                        values=(idx + 1, placa, renavam, lic_v, ipva_v, multas_v, situacao),
-                        tags=("sem_debito" if situacao == "Sem Débitos" else "com_debito" if situacao == "Com Débitos" else "pendente",)
+                        values=(idx + 1, placa, renavam, lic_v, ipva_v, multas_v, total_str, situacao),
+                        tags=(tag_linha,)
                     )
             else:
                 if self.tree.exists(str(idx)):
@@ -1207,7 +1303,7 @@ class AppConsultaFrotaGUI:
         itens = [(self.tree.set(k, col), k) for k in self.tree.get_children("")]
 
         # Detecta se é coluna de moeda ou numérica
-        if col in ["licenciamento", "ipva", "multas", "num"]:
+        if col in ["licenciamento", "ipva", "multas", "total_pagar", "num"]:
             itens.sort(key=lambda t: formatar_moeda_float(t[0]), reverse=self.ordem_reversa)
         else:
             itens.sort(key=lambda t: t[0].upper(), reverse=self.ordem_reversa)
@@ -1260,6 +1356,11 @@ class AppConsultaFrotaGUI:
             messagebox.showwarning("Filtro Necessário", "Selecione ao menos um débito para consulta.")
             return
 
+        # Ao iniciar uma nova rodada completa, limpa a tabela e o cache de memória
+        # para garantir que filtros modificados (ex: desmarcar multas) não mantenham resíduos
+        if indices_alvo is None:
+            self._preencher_tabela_inicial()
+
         self.is_executando = True
         self.is_pausado = False
         self.cancelar_solicitado = False
@@ -1299,8 +1400,11 @@ class AppConsultaFrotaGUI:
             lics = [self.resultados_memoria.get(i, {}).get("lic", "-") for i in range(qtd_total)]
             ipvas = [self.resultados_memoria.get(i, {}).get("ipva", "-") for i in range(qtd_total)]
             multas = [self.resultados_memoria.get(i, {}).get("multas", "-") for i in range(qtd_total)]
+            multas_av = [self.resultados_memoria.get(i, {}).get("multas_a_vencer") for i in range(qtd_total)]
 
-            df_chk = FrotaDataProcessor.consolidar_resultados(df, lics, ipvas, multas, qtd_total)
+            df_chk = FrotaDataProcessor.consolidar_resultados(
+                df, lics, ipvas, multas, qtd_total, resultados_multas_a_vencer=multas_av
+            )
             chk_path = os.path.join(pasta_destino, "~checkpoint_frota_ce.xlsx")
             df_chk.to_excel(chk_path, index=False)
         except Exception:
@@ -1359,12 +1463,18 @@ class AppConsultaFrotaGUI:
 
                         val_detran_lic = "-"
                         val_detran_multas = "-"
+                        multas_a_vencer = "R$ 0,00"
+                        multas_vencidas = "R$ 0,00"
                         val_sefaz_ipva = "-"
 
                         if consultar_lic or consultar_multas:
-                            val_detran_lic, val_detran_multas = scraper.consultar_detran(
+                            res_detran = scraper.consultar_detran(
                                 placa, renavam, consultar_lic, consultar_multas
                             )
+                            val_detran_lic = res_detran[0]
+                            val_detran_multas = res_detran[1]
+                            multas_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
+                            multas_vencidas = getattr(res_detran, "multas_vencidas", "R$ 0,00")
                             time.sleep(0.3)
 
                         if consultar_ipva:
@@ -1375,7 +1485,9 @@ class AppConsultaFrotaGUI:
                             self.resultados_memoria[idx] = {
                                 "lic": val_detran_lic,
                                 "ipva": val_sefaz_ipva,
-                                "multas": val_detran_multas
+                                "multas": val_detran_multas,
+                                "multas_a_vencer": multas_a_vencer,
+                                "multas_vencidas": multas_vencidas
                             }
                             concluidos_contador[0] += 1
                             c_atual = concluidos_contador[0]
@@ -1383,7 +1495,17 @@ class AppConsultaFrotaGUI:
                             soma_lic = sum(formatar_moeda_float(d.get("lic", "0")) for d in self.resultados_memoria.values())
                             soma_ipva = sum(formatar_moeda_float(d.get("ipva", "0")) for d in self.resultados_memoria.values())
                             soma_multas = sum(formatar_moeda_float(d.get("multas", "0")) for d in self.resultados_memoria.values())
-                            total_acumulado = soma_lic + soma_ipva + soma_multas
+
+                            # Total a pagar real: Licenciamento (já contabiliza multas vencidas) + IPVA + multas a vencer
+                            total_acumulado = sum(
+                                calcular_total_a_pagar_veiculo(
+                                    d.get("lic", "0"),
+                                    d.get("ipva", "0"),
+                                    d.get("multas", "0"),
+                                    d.get("multas_a_vencer")
+                                )
+                                for d in self.resultados_memoria.values()
+                            )
                             pct = int((c_atual / total_lote) * 100)
 
                         self.root.after(0, lambda p=c_atual, t=total_lote, plc=placa, pc=pct: self._atualizar_progresso_ui(p, t, plc, pc))
@@ -1394,6 +1516,7 @@ class AppConsultaFrotaGUI:
                             val_detran_lic,
                             val_sefaz_ipva,
                             val_detran_multas,
+                            multas_a_vencer,
                             c_atual,
                             total_geral,
                             soma_lic,
@@ -1429,19 +1552,30 @@ class AppConsultaFrotaGUI:
             lics_final = [self.resultados_memoria.get(i, {}).get("lic", "-") for i in range(total_geral)]
             ipvas_final = [self.resultados_memoria.get(i, {}).get("ipva", "-") for i in range(total_geral)]
             multas_final = [self.resultados_memoria.get(i, {}).get("multas", "-") for i in range(total_geral)]
+            multas_a_vencer_final = [self.resultados_memoria.get(i, {}).get("multas_a_vencer") for i in range(total_geral)]
 
             df_final = FrotaDataProcessor.consolidar_resultados(
-                df, lics_final, ipvas_final, multas_final, total_geral
+                df, lics_final, ipvas_final, multas_final, total_geral,
+                resultados_multas_a_vencer=multas_a_vencer_final
             )
 
             soma_lic_f = sum(formatar_moeda_float(v) for v in lics_final)
             soma_ipva_f = sum(formatar_moeda_float(v) for v in ipvas_final)
             soma_multas_f = sum(formatar_moeda_float(v) for v in multas_final)
+            soma_total_real_f = sum(
+                calcular_total_a_pagar_veiculo(
+                    self.resultados_memoria.get(i, {}).get("lic", "0"),
+                    self.resultados_memoria.get(i, {}).get("ipva", "0"),
+                    self.resultados_memoria.get(i, {}).get("multas", "0"),
+                    self.resultados_memoria.get(i, {}).get("multas_a_vencer")
+                )
+                for i in range(total_geral)
+            )
             totais_dict = {
                 "lic": formatar_float_moeda(soma_lic_f),
                 "ipva": formatar_float_moeda(soma_ipva_f),
                 "multas": formatar_float_moeda(soma_multas_f),
-                "total": formatar_float_moeda(soma_lic_f + soma_ipva_f + soma_multas_f)
+                "total": formatar_float_moeda(soma_total_real_f)
             }
 
             caminho_excel_gerado = ""
@@ -1488,7 +1622,7 @@ class AppConsultaFrotaGUI:
 
     def _marcar_linha_processando(self, index: int, placa: str, renavam: str):
         if self.tree.exists(str(index)):
-            self.tree.item(str(index), values=(index + 1, placa, renavam, "...", "...", "...", "Processando..."), tags=("processando",))
+            self.tree.item(str(index), values=(index + 1, placa, renavam, "...", "...", "...", "...", "Processando..."), tags=("processando",))
             self.tree.see(str(index))
 
     def _atualizar_progresso_ui(self, atual: int, total: int, placa: str, pct: int):
@@ -1501,6 +1635,7 @@ class AppConsultaFrotaGUI:
         lic: str,
         ipva: str,
         multas: str,
+        multas_a_vencer: str,
         qtd_concluidos: int,
         total_geral: int,
         soma_lic: float,
@@ -1508,22 +1643,33 @@ class AppConsultaFrotaGUI:
         soma_multas: float,
         total_acumulado: float
     ):
-        soma_veiculo = formatar_moeda_float(lic) + formatar_moeda_float(ipva) + formatar_moeda_float(multas)
+        total_veiculo = calcular_total_a_pagar_veiculo(lic, ipva, multas, multas_a_vencer)
+        total_veiculo_str = formatar_float_moeda(total_veiculo)
         tem_falha = any("falha" in str(v).lower() or "erro" in str(v).lower() for v in [lic, ipva, multas])
+        is_restricao = "restriç" in str(lic).lower() or "restric" in str(lic).lower()
+        is_pago = str(lic).strip().upper() == "PAGO"
 
         if tem_falha:
             situacao = "Falha na Consulta"
             tag = "falha"
             if index not in self.indices_em_falha:
                 self.indices_em_falha.append(index)
-        elif soma_veiculo > 0:
+        elif is_restricao:
+            tag = "restricao"
+            if total_veiculo > 0:
+                situacao = "Com Débitos / Restrição"
+            else:
+                situacao = "Restrição"
+            if index in self.indices_em_falha:
+                self.indices_em_falha.remove(index)
+        elif total_veiculo > 0:
             situacao = "Com Débitos"
             tag = "com_debito"
             if index in self.indices_em_falha:
                 self.indices_em_falha.remove(index)
         else:
             situacao = "Sem Débitos"
-            tag = "sem_debito"
+            tag = "pago" if is_pago else "sem_debito"
             if index in self.indices_em_falha:
                 self.indices_em_falha.remove(index)
 
@@ -1534,7 +1680,7 @@ class AppConsultaFrotaGUI:
         if self.tree.exists(str(index)):
             self.tree.item(
                 str(index),
-                values=(index + 1, placa, renavam, lic, ipva, multas, situacao),
+                values=(index + 1, placa, renavam, lic, ipva, multas, total_veiculo_str, situacao),
                 tags=(tag,)
             )
 

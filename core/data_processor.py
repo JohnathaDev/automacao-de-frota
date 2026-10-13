@@ -18,7 +18,7 @@ def formatar_moeda_float(valor_str: str) -> float:
         val_lower = str(valor_str).lower().strip()
         termos_ignorar = [
             "-", "n/a", "não consultado", "falha", "erro", "aguardando",
-            "inválid", "não localizado", "timeout", "..."
+            "inválid", "não localizado", "timeout", "...", "pago", "restrição", "restricao"
         ]
         if any(termo in val_lower for termo in termos_ignorar):
             return 0.0
@@ -35,6 +35,58 @@ def formatar_float_moeda(valor: float) -> str:
         return formatado
     except Exception:
         return "R$ 0,00"
+
+
+def calcular_total_a_pagar_veiculo(
+    lic: str | float,
+    ipva: str | float,
+    multas: str | float,
+    multas_a_vencer: str | float | None = None
+) -> float:
+    """
+    Calcula o Total a Pagar real para um veículo, eliminando duplicações:
+    - O valor do Licenciamento no Detran-CE (R$ 188,96 para motos e R$ 220,45 para carros de taxa base)
+      já inclui as multas vencidas em seu extrato oficial.
+    - Portanto, quando há Licenciamento em aberto (lic > 0), apenas as multas A VENCER
+      (ainda dentro do prazo de pagamento) devem ser somadas ao Licenciamento + IPVA.
+    - As multas já vencidas não devem ser somadas novamente, pois já foram contabilizadas no Licenciamento.
+    - Caso não haja débito de Licenciamento (lic == 0), ou o Licenciamento não tenha sido consultado,
+      as multas em aberto são somadas normalmente.
+    """
+    val_lic_f = formatar_moeda_float(lic) if isinstance(lic, str) else float(lic or 0.0)
+    val_ipva_f = formatar_moeda_float(ipva) if isinstance(ipva, str) else float(ipva or 0.0)
+    val_multas_f = formatar_moeda_float(multas) if isinstance(multas, str) else float(multas or 0.0)
+
+    if multas_a_vencer is not None:
+        val_a_vencer_f = (
+            formatar_moeda_float(multas_a_vencer)
+            if isinstance(multas_a_vencer, str)
+            else float(multas_a_vencer or 0.0)
+        )
+    else:
+        # Fallback analítico baseado nas taxas oficiais informadas:
+        # Moto = R$ 188,96, Carro = R$ 220,45
+        if val_lic_f > 0 and val_multas_f > 0:
+            if abs(val_lic_f - 188.96) < 0.5 or abs(val_lic_f - 220.45) < 0.5:
+                # Nenhuma multa vencida no licenciamento; todo o saldo de multas está a vencer
+                val_a_vencer_f = val_multas_f
+            elif val_lic_f > 220.45:
+                taxa_base = 188.96 if (val_lic_f - 188.96) <= val_multas_f + 1.0 else 220.45
+                multas_vencidas_est = max(0.0, val_lic_f - taxa_base)
+                val_a_vencer_f = max(0.0, val_multas_f - multas_vencidas_est)
+            elif val_lic_f > 188.96:
+                multas_vencidas_est = max(0.0, val_lic_f - 188.96)
+                val_a_vencer_f = max(0.0, val_multas_f - multas_vencidas_est)
+            else:
+                val_a_vencer_f = val_multas_f
+        else:
+            val_a_vencer_f = val_multas_f
+
+    if val_lic_f > 0:
+        return round(val_lic_f + val_ipva_f + val_a_vencer_f, 2)
+    else:
+        return round(val_ipva_f + val_multas_f, 2)
+
 
 
 def obter_estilo_financeiro(valor_float: float, is_licenciamento: bool = False) -> tuple[bool, bool, str | None]:
@@ -184,12 +236,13 @@ class FrotaDataProcessor:
         resultados_lic: list[str],
         resultados_ipva: list[str],
         resultados_multas: list[str],
-        qtd_processada: int
+        qtd_processada: int,
+        resultados_multas_a_vencer: list[str] | None = None
     ) -> pd.DataFrame:
         """
         Constrói o DataFrame final preservando todas as colunas originais do usuário
-        e adicionando as colunas oficiais de débitos e situação.
-        Evita falsos negativos: identifica 'Falha na Consulta' e 'Placa Inválida'.
+        e adicionando as colunas oficiais de débitos, total real a pagar e situação.
+        Evita duplicação de multas vencidas já inclusas no Licenciamento.
         """
         df_final = df_original.iloc[:qtd_processada].copy()
 
@@ -197,32 +250,44 @@ class FrotaDataProcessor:
         df_final["Valor_IPVA"] = resultados_ipva[:qtd_processada]
         df_final["Valor_Multas"] = resultados_multas[:qtd_processada]
 
-        # Determinação do Status consolidado
+        # Determinação do Total a Pagar e Status consolidado
+        totais_a_pagar_lista = []
         status_lista = []
+
         for i in range(qtd_processada):
             lic = str(resultados_lic[i])
             ipva = str(resultados_ipva[i])
             multas = str(resultados_multas[i])
+            m_a_vencer = (
+                str(resultados_multas_a_vencer[i])
+                if resultados_multas_a_vencer and i < len(resultados_multas_a_vencer)
+                else None
+            )
 
             tem_falha = any(
                 termo in v.lower()
                 for v in [lic, ipva, multas]
                 for termo in ["falha", "erro", "timeout", "inválid", "não localizado"]
             )
-            soma = (
-                formatar_moeda_float(lic) +
-                formatar_moeda_float(ipva) +
-                formatar_moeda_float(multas)
-            )
+
+            total_real = calcular_total_a_pagar_veiculo(lic, ipva, multas, m_a_vencer)
+            totais_a_pagar_lista.append(formatar_float_moeda(total_real))
 
             if tem_falha:
                 status_lista.append("Falha na Consulta")
-            elif soma > 0:
+            elif "restriç" in lic.lower() or "restric" in lic.lower():
+                if total_real > 0:
+                    status_lista.append("Com Débitos / Restrição")
+                else:
+                    status_lista.append("Restrição de Impedimento")
+            elif total_real > 0:
                 status_lista.append("Com Débitos Pendentes")
             else:
                 status_lista.append("Sem Débitos")
 
+        df_final["Total_a_Pagar"] = totais_a_pagar_lista
         df_final["Status"] = status_lista
         df_final["Data_Consulta"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
         return df_final
+

@@ -110,6 +110,7 @@ class FrotaRelatorioExporter:
         col_lic_idx = None
         col_ipva_idx = None
         col_multas_idx = None
+        col_total_idx = None
         col_status_idx = None
 
         for col_idx, col_name in enumerate(df.columns, start=1):
@@ -120,6 +121,8 @@ class FrotaRelatorioExporter:
                 col_ipva_idx = col_idx
             elif "MULTA" in cn:
                 col_multas_idx = col_idx
+            elif "TOTAL" in cn:
+                col_total_idx = col_idx
             elif "STATUS" in cn:
                 col_status_idx = col_idx
 
@@ -135,31 +138,52 @@ class FrotaRelatorioExporter:
                 cell.border = borda_fina
                 val_txt = str(cell.value or "")
 
-                is_col_financeira = col_idx in [col_lic_idx, col_ipva_idx, col_multas_idx]
+                is_col_financeira = col_idx in [col_lic_idx, col_ipva_idx, col_multas_idx, col_total_idx]
+                val_txt_upper = val_txt.upper()
 
                 if is_col_financeira:
-                    cell.alignment = alinhamento_direita
-                    val_float = formatar_moeda_float(val_txt)
-                    is_lic = (col_idx == col_lic_idx)
-                    bold, underline, cor_hex = obter_estilo_financeiro(val_float, is_licenciamento=is_lic)
+                    if val_txt_upper == "PAGO":
+                        cell.alignment = alinhamento_centro
+                        # Fundo verde pastel suave e fonte verde escuro elegante
+                        cell.fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
+                        cell.font = Font(name="Calibri", size=10, bold=True, color="166534")
+                    elif "RESTRIÇÃO" in val_txt_upper or "RESTRICAO" in val_txt_upper:
+                        cell.alignment = alinhamento_centro
+                        # Fundo laranja pastel suave e fonte laranja escuro elegante
+                        cell.fill = PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid")
+                        cell.font = Font(name="Calibri", size=10, bold=True, color="9A3412")
+                    else:
+                        cell.alignment = alinhamento_direita
+                        val_float = formatar_moeda_float(val_txt)
+                        is_lic = (col_idx == col_lic_idx)
+                        is_tot = (col_idx == col_total_idx)
 
-                    sublinhado_estilo = 'single' if underline else None
-                    cor_fonte = cor_hex.replace("#", "") if cor_hex else '000000'
+                        bold, underline, cor_hex = obter_estilo_financeiro(val_float, is_licenciamento=is_lic)
+                        if is_tot:
+                            bold = True
+                            if val_float > 0:
+                                cor_hex = "#15803D"
 
-                    cell.font = Font(
-                        name="Calibri",
-                        size=10,
-                        bold=bold,
-                        underline=sublinhado_estilo,
-                        color=cor_fonte
-                    )
+                        sublinhado_estilo = 'single' if underline else None
+                        cor_fonte = cor_hex.replace("#", "") if cor_hex else '000000'
+
+                        cell.font = Font(
+                            name="Calibri",
+                            size=10,
+                            bold=bold,
+                            underline=sublinhado_estilo,
+                            color=cor_fonte
+                        )
                 elif col_idx == col_status_idx:
                     cell.alignment = alinhamento_centro
-                    if "SEM DÉBITO" in val_txt.upper():
+                    if "RESTRIÇÃO" in val_txt_upper or "RESTRICAO" in val_txt_upper:
+                        cell.fill = PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid")
+                        cell.font = Font(name="Calibri", size=10, bold=True, color="9A3412")
+                    elif "SEM DÉBITO" in val_txt_upper:
                         cell.font = Font(name="Calibri", size=10, bold=True, color="166534")
-                    elif "COM DÉBITO" in val_txt.upper():
+                    elif "COM DÉBITO" in val_txt_upper:
                         cell.font = Font(name="Calibri", size=10, bold=True, color="991B1B")
-                    elif "FALHA" in val_txt.upper():
+                    elif "FALHA" in val_txt_upper:
                         cell.font = Font(name="Calibri", size=10, bold=True, color="B45309")
                 elif "PLACA" in str(ws.cell(row=1, column=col_idx).value or "").upper():
                     cell.alignment = alinhamento_centro
@@ -271,7 +295,9 @@ class FrotaRelatorioExporter:
                 col_upper = str(col_nome).upper()
 
                 if "STATUS" in col_upper:
-                    if "SEM DÉBITO" in val_upper:
+                    if "RESTRIÇÃO" in val_upper or "RESTRICAO" in val_upper:
+                        txt_p = f"<font color='#C2410C'><b>{val}</b></font>"
+                    elif "SEM DÉBITO" in val_upper:
                         txt_p = f"<font color='#166534'><b>{val}</b></font>"
                     elif "COM DÉBITO" in val_upper:
                         txt_p = f"<font color='#991B1B'><b>{val}</b></font>"
@@ -280,20 +306,32 @@ class FrotaRelatorioExporter:
                     else:
                         txt_p = val
                     linha_celulas.append(Paragraph(txt_p, estilo_td))
-                elif any(c in col_upper for c in ["LICENCIAMENTO", "IPVA", "MULTA"]):
-                    val_float = formatar_moeda_float(val)
-                    is_lic = "LICENCIAMENTO" in col_upper
-                    bold, underline, cor_hex = obter_estilo_financeiro(val_float, is_licenciamento=is_lic)
+                elif any(c in col_upper for c in ["LICENCIAMENTO", "IPVA", "MULTA", "TOTAL"]):
+                    if val_upper == "PAGO":
+                        txt_p = "<font color='#166534'><b>PAGO</b></font>"
+                        linha_celulas.append(Paragraph(txt_p, estilo_td))
+                    elif "RESTRIÇÃO" in val_upper or "RESTRICAO" in val_upper:
+                        txt_p = "<font color='#C2410C'><b>Restrição</b></font>"
+                        linha_celulas.append(Paragraph(txt_p, estilo_td))
+                    else:
+                        val_float = formatar_moeda_float(val)
+                        is_lic = "LICENCIAMENTO" in col_upper
+                        is_tot = "TOTAL" in col_upper
+                        bold, underline, cor_hex = obter_estilo_financeiro(val_float, is_licenciamento=is_lic)
+                        if is_tot:
+                            bold = True
+                            if val_float > 0:
+                                cor_hex = "#15803D"
 
-                    conteudo = val
-                    if underline:
-                        conteudo = f"<u>{conteudo}</u>"
-                    if bold:
-                        conteudo = f"<b>{conteudo}</b>"
-                    if cor_hex:
-                        conteudo = f"<font color='{cor_hex}'>{conteudo}</font>"
+                        conteudo = val
+                        if underline:
+                            conteudo = f"<u>{conteudo}</u>"
+                        if bold:
+                            conteudo = f"<b>{conteudo}</b>"
+                        if cor_hex:
+                            conteudo = f"<font color='{cor_hex}'>{conteudo}</font>"
 
-                    linha_celulas.append(Paragraph(conteudo, estilo_td_right))
+                        linha_celulas.append(Paragraph(conteudo, estilo_td_right))
                 elif "PLACA" in col_upper:
                     linha_celulas.append(Paragraph(f"<b>{val}</b>", estilo_td))
                 else:

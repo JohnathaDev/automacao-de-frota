@@ -11,6 +11,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -19,6 +20,22 @@ from webdriver_manager.chrome import ChromeDriverManager
 from core.logger_config import obter_logger
 
 logger = obter_logger("ScraperEngine")
+
+
+class DetranResultado(tuple):
+    """
+    Subclasse de tuple (lic, multas) para retrocompatibilidade perfeita com desempacotamento de 2 valores:
+    val_lic, val_multas = scraper.consultar_detran(...)
+    Expõe também multas_a_vencer e multas_vencidas para cálculo exato do Total a Pagar.
+    """
+    def __new__(cls, val_lic: str, val_multas: str, multas_a_vencer: str = "R$ 0,00", multas_vencidas: str = "R$ 0,00"):
+        return super().__new__(cls, (val_lic, val_multas))
+
+    def __init__(self, val_lic: str, val_multas: str, multas_a_vencer: str = "R$ 0,00", multas_vencidas: str = "R$ 0,00"):
+        self.lic = val_lic
+        self.multas = val_multas
+        self.multas_a_vencer = multas_a_vencer
+        self.multas_vencidas = multas_vencidas
 
 
 class FrotaScraperEngine:
@@ -94,116 +111,175 @@ class FrotaScraperEngine:
         consultar_lic: bool,
         consultar_multas: bool,
         tentativa_atual: int = 1
-    ) -> tuple[str, str]:
+    ) -> DetranResultado:
         """
         Consulta Detran-CE na mesma sessão:
         Extrai Licenciamento e/ou Multas com navegação unificada para velocidade máxima.
+        Diferencia multas a vencer (no prazo) de multas já vencidas (embutidas no licenciamento).
         Diferencia veículos regulares (R$ 0,00) de falhas/erros de conexão.
         Possui auto-heal se o navegador travar.
         """
         val_lic = "-" if not consultar_lic else "Falha Detran"
         val_multas = "-" if not consultar_multas else "Falha Detran"
+        val_multas_a_vencer = "-" if not consultar_multas else "R$ 0,00"
+        val_multas_vencidas = "-" if not consultar_multas else "R$ 0,00"
 
         if not (consultar_lic or consultar_multas):
-            return "-", "-"
+            return DetranResultado("-", "-", "-", "-")
 
-        url_detran = "https://sistemas.detran.ce.gov.br/central/#veiculo"
         try:
             if not self.driver:
                 self.iniciar()
 
-            self.driver.get(url_detran)
+            # Força navegação limpa para resetar o DOM e modais entre veículos
+            self.driver.get("https://sistemas.detran.ce.gov.br/central/")
+            time.sleep(0.2)
+            self.driver.get("https://sistemas.detran.ce.gov.br/central/#veiculo")
 
-            # 1. Clica no menu lateral de Licenciamento (ou Taxas/Multas)
+            # 1. Clica no menu lateral de Licenciamento / Taxas / Multas
             menu_btn = self.wait.until(
                 EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Licenciamento') or contains(text(), 'Taxas / Multas')]"))
             )
-            self._clicar_seguro(menu_btn)
+            self.driver.execute_script("arguments[0].click();", menu_btn)
 
-            # 2. Localiza inputs visíveis (Placa e RENAVAM)
+            # 2. Localiza inputs visíveis (Placa e RENAVAM) e preenche de forma limpa
             self.wait.until(lambda d: len([i for i in d.find_elements(By.TAG_NAME, "input") if i.is_displayed()]) >= 2)
             inputs = [i for i in self.driver.find_elements(By.TAG_NAME, "input") if i.is_displayed()]
 
+            placa_limpa = str(placa).strip().upper()
+            renavam_limpo = str(renavam).strip()
+
             inputs[0].clear()
-            inputs[0].send_keys(str(placa).strip().upper())
+            inputs[0].send_keys(placa_limpa)
             inputs[1].clear()
-            inputs[1].send_keys(str(renavam).strip())
+            inputs[1].send_keys(renavam_limpo)
 
             # 3. Clica em CONFIRMAR
             btn_confirmar = self.wait.until(
-                EC.presence_of_element_located((
+                EC.element_to_be_clickable((
                     By.XPATH, "//button[contains(text(), 'CONFIRMAR') or @id='submit-veiculo']"
                 ))
             )
-            self._clicar_seguro(btn_confirmar)
-            time.sleep(1.2)
+            self.driver.execute_script("arguments[0].click();", btn_confirmar)
+            time.sleep(1.0)
 
-            # Checa se houve alerta de veículo inexistente/inválido
-            alertas = self.driver.find_elements(
-                By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'Inexistente') or contains(text(), 'Dados incorretos')]"
-            )
+            # 4. Aguarda a estabilização da resposta do Detran pós-confirmação
+            def resposta_detran_pronta(d):
+                tem_alerta = len(d.find_elements(By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'Inexistente') or contains(text(), 'Dados incorretos')]")) > 0
+                tem_link_lic = len(d.find_elements(By.XPATH, "//*[contains(text(), 'licenciamento') and contains(text(), 'AQUI')] | //*[contains(text(), 'imprimir seu licenciamento')]")) > 0
+                tem_link_multa = len(d.find_elements(By.XPATH, "//*[contains(text(), 'CLIQUE AQUI')]")) > 0
+                tem_sem_multa = len(d.find_elements(By.XPATH, "//*[contains(text(), 'não possui multas') or contains(text(), 'Nenhuma multa')]")) > 0
+                tem_dados = len(d.find_elements(By.XPATH, f"//*[contains(text(), '{placa_limpa}') and not(self::input)]")) > 0
+                return tem_alerta or tem_link_lic or tem_link_multa or tem_sem_multa or tem_dados
+
+            try:
+                WebDriverWait(self.driver, 10).until(resposta_detran_pronta)
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+            # Checa se houve alerta de veículo inexistente/inválido VISÍVEL
+            alertas = [
+                a for a in self.driver.find_elements(
+                    By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'Inexistente') or contains(text(), 'Dados incorretos')]"
+                ) if a.is_displayed()
+            ]
             if alertas:
-                return ("Não Localizado" if consultar_lic else "-"), ("Não Localizado" if consultar_multas else "-")
+                return DetranResultado(
+                    "Não Localizado" if consultar_lic else "-",
+                    "Não Localizado" if consultar_multas else "-",
+                    "Não Localizado" if consultar_multas else "-",
+                    "Não Localizado" if consultar_multas else "-"
+                )
 
-            # Helper interno para fechar o modal compartilhado do Detran-CE
+            # Helper interno seguro para fechar o modal compartilhado do Detran-CE
             def fechar_modal_se_aberto():
                 try:
-                    fechar_btns = self.driver.find_elements(
-                        By.XPATH, "//*[@id='outros-servicos-modal']//button[contains(text(), 'Fechar') or contains(@class, 'close') or @data-dismiss='modal']"
-                    )
-                    for b in fechar_btns:
-                        if b.is_displayed():
-                            self._clicar_seguro(b)
-                            time.sleep(0.5)
-                            break
+                    self.driver.execute_script("""
+                        var m = document.getElementById('outros-servicos-modal');
+                        if (m && typeof $ !== 'undefined') { $(m).modal('hide'); }
+                        var bds = document.querySelectorAll('.modal-backdrop');
+                        bds.forEach(function(b){ b.remove(); });
+                        document.body.classList.remove('modal-open');
+                    """)
+                    time.sleep(0.4)
                 except Exception:
                     pass
 
-            # 4. Extração de LICENCIAMENTO (Executado PRIMEIRO em modal limpo)
+            aits_no_licenciamento = set()
+
+            # 5. Extração de LICENCIAMENTO
             if consultar_lic:
                 try:
-                    link_lic_els = self.driver.find_elements(
-                        By.XPATH, "//*[contains(text(), 'Clique AQUI se deseja imprimir seu licenciamento.')]"
-                    )
+                    link_lic_els = [
+                        l for l in self.driver.find_elements(
+                            By.XPATH, "//*[contains(text(), 'licenciamento') and contains(text(), 'AQUI')] | //*[contains(text(), 'imprimir seu licenciamento')]"
+                        ) if l.is_displayed()
+                    ]
                     if not link_lic_els:
-                        val_lic = "R$ 0,00"
+                        val_lic = "PAGO"
                     else:
-                        self._clicar_seguro(link_lic_els[0])
-                        wait_modal = WebDriverWait(self.driver, 10)
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();", link_lic_els[0])
+                        wait_modal = WebDriverWait(self.driver, 14)
 
-                        # Aguarda o modal carregar especificamente o conteúdo do Licenciamento
-                        wait_modal.until(EC.visibility_of_element_located((
-                            By.XPATH, "//*[@id='outros-servicos-modal']//*[contains(text(), 'licenciamento') or contains(text(), 'Licenciamento')]"
-                        )))
-                        time.sleep(0.8)
+                        # Aguarda o modal abrir
+                        wait_modal.until(lambda d: d.find_element(By.ID, "outros-servicos-modal").is_displayed())
+                        time.sleep(1.0)
 
-                        el_total_lic = wait_modal.until(EC.visibility_of_element_located((
-                            By.XPATH, "//*[@id='outros-servicos-modal']//tr[contains(., 'TOTAL')]/td[last()]"
-                        )))
-                        texto_lic = el_total_lic.text.strip()
-                        val_lic = texto_lic if texto_lic else "R$ 0,00"
-                except TimeoutException:
-                    val_lic = "R$ 0,00"
-                except Exception:
+                        modal_el = self.driver.find_element(By.ID, "outros-servicos-modal")
+                        modal_txt = modal_el.text.lower()
+
+                        if any(t in modal_txt for t in ["restricao de impedimento", "restrição de impedimento", "com restricao", "com restrição"]):
+                            val_lic = "Restrição"
+                        elif any(t in modal_txt for t in ["já licenciado", "ja licenciado", "sem débitos", "sem debitos"]):
+                            val_lic = "PAGO"
+                        else:
+                            # Aguarda linha TOTAL da tabela do modal
+                            el_total_lic = wait_modal.until(EC.visibility_of_element_located((
+                                By.XPATH, "//*[@id='outros-servicos-modal']//tr[contains(., 'TOTAL')]/td[last()]"
+                            )))
+                            texto_lic = el_total_lic.text.strip()
+                            val_lic = texto_lic if texto_lic else "R$ 0,00"
+
+                        # Captura possíveis AITs das multas vencidas embutidas no licenciamento
+                        import re
+                        linhas_lic = self.driver.find_elements(By.XPATH, "//*[@id='outros-servicos-modal']//table//tr")
+                        for tr in linhas_lic:
+                            texto_tr = tr.text.strip().upper()
+                            possiveis_aits = re.findall(r"\b[A-Z0-9]{8,12}\b", texto_tr)
+                            for a in possiveis_aits:
+                                aits_no_licenciamento.add(a)
+
+                except Exception as e_lic:
+                    fechar_modal_se_aberto()
+                    if tentativa_atual == 1:
+                        raise e_lic
+                    logger.debug(f"Aviso na extração de licenciamento ({placa}): {e_lic}")
                     val_lic = "Falha Licenciamento"
                 finally:
                     fechar_modal_se_aberto()
 
-            # 5. Extração de MULTAS (Executado DEPOIS com modal anterior fechado)
+            # 6. Extração de MULTAS
             if consultar_multas:
                 try:
-                    sem_multas = self.driver.find_elements(
-                        By.XPATH, "//*[contains(text(), 'não possui multas') or contains(text(), 'Nenhuma multa') or contains(text(), 'Não constam multas')]"
-                    )
+                    sem_multas = [
+                        s for s in self.driver.find_elements(
+                            By.XPATH, "//*[contains(text(), 'não possui multas') or contains(text(), 'Nenhuma multa') or contains(text(), 'Não constam multas')]"
+                        ) if s.is_displayed()
+                    ]
                     if sem_multas:
                         val_multas = "R$ 0,00"
+                        val_multas_a_vencer = "R$ 0,00"
+                        val_multas_vencidas = "R$ 0,00"
                     else:
-                        links_multa = self.driver.find_elements(
-                            By.XPATH, "//*[contains(text(), 'multas, CLIQUE AQUI') or contains(text(), 'multa, CLIQUE AQUI')]"
-                        )
+                        links_multa = [
+                            l for l in self.driver.find_elements(
+                                By.XPATH, "//*[contains(text(), 'multas, CLIQUE AQUI') or contains(text(), 'multa, CLIQUE AQUI')]"
+                            ) if l.is_displayed()
+                        ]
                         if links_multa:
-                            self._clicar_seguro(links_multa[0])
-                            wait_modal = WebDriverWait(self.driver, 10)
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();", links_multa[0])
+                            wait_modal = WebDriverWait(self.driver, 14)
 
                             wait_modal.until(EC.visibility_of_element_located((
                                 By.XPATH, "//*[@id='outros-servicos-modal']//table//tr"
@@ -212,38 +288,80 @@ class FrotaScraperEngine:
 
                             linhas_multa = self.driver.find_elements(By.XPATH, "//*[@id='outros-servicos-modal']//table//tr")
                             soma_multas = 0.0
+                            soma_multas_a_vencer = 0.0
+                            soma_multas_vencidas = 0.0
                             encontrou_multas = False
 
                             from core.data_processor import formatar_moeda_float, formatar_float_moeda
+                            from datetime import datetime
+                            hoje = datetime.now().date()
 
                             for linha in linhas_multa:
                                 tds = linha.find_elements(By.TAG_NAME, "td")
                                 if len(tds) >= 6:
                                     txt_valor = tds[-1].text.strip()
                                     if "R$" in txt_valor:
-                                        soma_multas += formatar_moeda_float(txt_valor)
+                                        valor_multa = formatar_moeda_float(txt_valor)
+                                        soma_multas += valor_multa
                                         encontrou_multas = True
+
+                                        ait_multa = ""
+                                        data_venc_str = ""
+                                        if len(tds) >= 8:
+                                            ait_multa = tds[1].text.strip().upper()
+                                            data_venc_str = tds[5].text.strip()
+                                        elif len(tds) >= 7:
+                                            data_venc_str = tds[4].text.strip()
+
+                                        is_vencida = False
+                                        if data_venc_str:
+                                            try:
+                                                dt_venc = datetime.strptime(data_venc_str, "%d/%m/%Y").date()
+                                                if dt_venc < hoje:
+                                                    is_vencida = True
+                                            except Exception:
+                                                pass
+
+                                        if ait_multa and ait_multa in aits_no_licenciamento:
+                                            is_vencida = True
+
+                                        if is_vencida:
+                                            soma_multas_vencidas += valor_multa
+                                        else:
+                                            soma_multas_a_vencer += valor_multa
 
                             if encontrou_multas:
                                 val_multas = formatar_float_moeda(soma_multas)
+                                val_multas_a_vencer = formatar_float_moeda(soma_multas_a_vencer)
+                                val_multas_vencidas = formatar_float_moeda(soma_multas_vencidas)
                             else:
                                 el_total = self.driver.find_elements(
                                     By.XPATH, "//*[@id='outros-servicos-modal']//tr[contains(., 'TOTAL')]/td[last()]"
                                 )
                                 if el_total and "R$" in el_total[0].text:
                                     val_multas = el_total[0].text.strip()
+                                    val_multas_a_vencer = val_multas
+                                    val_multas_vencidas = "R$ 0,00"
                                 else:
                                     val_multas = "R$ 0,00"
+                                    val_multas_a_vencer = "R$ 0,00"
+                                    val_multas_vencidas = "R$ 0,00"
                         else:
                             val_multas = "R$ 0,00"
-                except TimeoutException:
-                    val_multas = "R$ 0,00"
-                except Exception:
+                            val_multas_a_vencer = "R$ 0,00"
+                            val_multas_vencidas = "R$ 0,00"
+                except Exception as e_mult:
+                    fechar_modal_se_aberto()
+                    if tentativa_atual == 1:
+                        raise e_mult
+                    logger.debug(f"Aviso na extração de multas ({placa}): {e_mult}")
                     val_multas = "Falha Multas"
+                    val_multas_a_vencer = "Falha Multas"
+                    val_multas_vencidas = "Falha Multas"
                 finally:
                     fechar_modal_se_aberto()
 
-            return val_lic, val_multas
+            return DetranResultado(val_lic, val_multas, val_multas_a_vencer, val_multas_vencidas)
 
         except (WebDriverException, Exception) as e:
             logger.warning(f"Erro ao consultar Detran para {placa} (Tentativa {tentativa_atual}): {e}")
@@ -251,7 +369,12 @@ class FrotaScraperEngine:
                 # Auto-heal: reinicia o navegador e tenta mais uma vez
                 self.reiniciar()
                 return self.consultar_detran(placa, renavam, consultar_lic, consultar_multas, tentativa_atual=2)
-            return ("Falha Detran" if consultar_lic else "-"), ("Falha Detran" if consultar_multas else "-")
+            return DetranResultado(
+                "Falha Detran" if consultar_lic else "-",
+                "Falha Detran" if consultar_multas else "-",
+                "Falha Detran" if consultar_multas else "-",
+                "Falha Detran" if consultar_multas else "-"
+            )
 
     def consultar_sefaz_ipva(self, placa: str, renavam: str, tentativa_atual: int = 1) -> str:
         """

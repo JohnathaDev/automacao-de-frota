@@ -21,7 +21,8 @@ from core import (
     FrotaScraperEngine,
     FrotaRelatorioExporter,
     formatar_moeda_float,
-    formatar_float_moeda
+    formatar_float_moeda,
+    calcular_total_a_pagar_veiculo
 )
 
 HEADLESS_MODE = True
@@ -84,6 +85,7 @@ def processar_frota(
     licenciamentos = []
     ipvas = []
     multas = []
+    multas_a_vencer_lista = []
 
     soma_lic = 0.0
     soma_ipva = 0.0
@@ -103,11 +105,15 @@ def processar_frota(
 
             val_lic = "-"
             val_multas = "-"
+            m_a_vencer = "R$ 0,00"
             val_ipva = "-"
 
             if consultar_lic or consultar_multas:
-                val_lic, val_multas = scraper.consultar_detran(placa, renavam, consultar_lic, consultar_multas)
-                print(f"    -> Detran-CE: Licenciamento={val_lic} | Multas={val_multas}")
+                res_detran = scraper.consultar_detran(placa, renavam, consultar_lic, consultar_multas)
+                val_lic = res_detran[0]
+                val_multas = res_detran[1]
+                m_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
+                print(f"    -> Detran-CE: Licenciamento={val_lic} | Multas={val_multas} (A vencer: {m_a_vencer})")
                 time.sleep(0.4)
 
             if consultar_ipva:
@@ -118,6 +124,7 @@ def processar_frota(
             licenciamentos.append(val_lic)
             ipvas.append(val_ipva)
             multas.append(val_multas)
+            multas_a_vencer_lista.append(m_a_vencer)
 
             soma_lic += formatar_moeda_float(val_lic)
             soma_ipva += formatar_moeda_float(val_ipva)
@@ -139,14 +146,25 @@ def processar_frota(
 
     print(f"\n[4/4] Consolidando resultados e gerando relatórios ({qtd}/{total} veículos)...")
     df_final = FrotaDataProcessor.consolidar_resultados(
-        df_frota, licenciamentos, ipvas, multas, qtd
+        df_frota, licenciamentos, ipvas, multas, qtd,
+        resultados_multas_a_vencer=multas_a_vencer_lista
+    )
+
+    soma_total_real = sum(
+        calcular_total_a_pagar_veiculo(
+            licenciamentos[i],
+            ipvas[i],
+            multas[i],
+            multas_a_vencer_lista[i]
+        )
+        for i in range(qtd)
     )
 
     totais_dict = {
         "lic": formatar_float_moeda(soma_lic),
         "ipva": formatar_float_moeda(soma_ipva),
         "multas": formatar_float_moeda(soma_multas),
-        "total": formatar_float_moeda(soma_lic + soma_ipva + soma_multas)
+        "total": formatar_float_moeda(soma_total_real)
     }
 
     # Gera Excel com proteção contra PermissionError
