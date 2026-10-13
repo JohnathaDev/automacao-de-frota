@@ -3,6 +3,9 @@
 *.xls
 *.csv
 *.pdf
+logs/
+config.json
+
 
 # Python
 __pycache__/

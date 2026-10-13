@@ -1,0 +1,13 @@
+{
+    "modo_noturno": false,
+    "pasta_destino": "",
+    "ultimo_arquivo": "",
+    "consultar_ipva": true,
+    "consultar_lic": true,
+    "consultar_multas": true,
+    "modo_headless": true,
+    "formato_exportacao": "ambos",
+    "qtd_workers": 1,
+    "som_notificacao": true,
+    "arquivos_recentes": []
+}
