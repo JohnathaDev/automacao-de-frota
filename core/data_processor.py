@@ -246,8 +246,22 @@ class FrotaDataProcessor:
         """
         df_final = df_original.iloc[:qtd_processada].copy()
 
-        df_final["Valor_Licenciamento"] = resultados_lic[:qtd_processada]
-        df_final["Valor_IPVA"] = resultados_ipva[:qtd_processada]
+        def normalizar_valor_pago(v: str) -> str:
+            v_str = str(v).strip()
+            v_lower = v_str.lower()
+            if v_str in ["R$ 0,00", "0,00", "0.00", "0"]:
+                return "PAGO"
+            if formatar_moeda_float(v_str) == 0.0 and v_str not in ["-", "N/A", "Não Consultado"] and not any(
+                f in v_lower for f in ["falha", "erro", "inválid", "timeout", "não localizado", "restriç", "restric"]
+            ):
+                return "PAGO"
+            return v_str
+
+        resultados_lic_proc = [normalizar_valor_pago(v) for v in resultados_lic[:qtd_processada]]
+        resultados_ipva_proc = [normalizar_valor_pago(v) for v in resultados_ipva[:qtd_processada]]
+
+        df_final["Valor_Licenciamento"] = resultados_lic_proc
+        df_final["Valor_IPVA"] = resultados_ipva_proc
         df_final["Valor_Multas"] = resultados_multas[:qtd_processada]
 
         # Determinação do Total a Pagar e Status consolidado
@@ -255,8 +269,8 @@ class FrotaDataProcessor:
         status_lista = []
 
         for i in range(qtd_processada):
-            lic = str(resultados_lic[i])
-            ipva = str(resultados_ipva[i])
+            lic = str(resultados_lic_proc[i])
+            ipva = str(resultados_ipva_proc[i])
             multas = str(resultados_multas[i])
             m_a_vencer = (
                 str(resultados_multas_a_vencer[i])

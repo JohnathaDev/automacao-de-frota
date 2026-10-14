@@ -1,5 +1,5 @@
 """
-Testes de Inicialização e Widgets da Interface Gráfica (Tkinter).
+Testes de Inicialização, Widgets e Design System da Interface Gráfica Principal (Tkinter).
 """
 import unittest
 import tkinter as tk
@@ -25,6 +25,46 @@ class TestGUI(unittest.TestCase):
         self.assertIsNotNone(app.btn_iniciar)
         self.assertIsNotNone(app.btn_baixar_boletos)
         self.assertIsNotNone(app.combo_workers)
+        self.assertEqual(len(app.luxury_cards), 5)
+        self.assertIsNotNone(app.status_orb)
+
+        # Testa alternância de temas (Claro / Noturno)
+        estado_inicial = app.modo_noturno
+        app._alternar_tema()
+        self.assertNotEqual(app.modo_noturno, estado_inicial)
+        if app.modo_noturno:
+            self.assertIn("Modo Claro", app.btn_tema.cget("text"))
+        else:
+            self.assertIn("Modo Noturno", app.btn_tema.cget("text"))
+
+        app._alternar_tema()
+        self.assertEqual(app.modo_noturno, estado_inicial)
+
+    def test_gui_filtros_pilula(self):
+        app = AppConsultaFrotaGUI(self.root)
+        app.df_carregado = pd.DataFrame([
+            {"Placa": "THS2C78", "RENAVAM": "01415443316"},
+            {"Placa": "SBO1F58", "RENAVAM": "01353629012"}
+        ])
+        app.col_placa = "Placa"
+        app.col_renavam = "RENAVAM"
+        app._preencher_tabela_inicial()
+
+        app.resultados_memoria[0] = {"lic": "R$ 1.250,00", "ipva": "PAGO", "multas": "R$ 0,00"}
+        app._atualizar_linha_tabela(0, "R$ 1.250,00", "PAGO", "R$ 0,00", "R$ 0,00", 1, 2, 1250.0, 0.0, 0.0, 1250.0)
+
+        app.resultados_memoria[1] = {"lic": "PAGO", "ipva": "PAGO", "multas": "R$ 0,00"}
+        app._atualizar_linha_taca = 1
+        app._atualizar_linha_tabela(1, "PAGO", "PAGO", "R$ 0,00", "R$ 0,00", 2, 2, 1250.0, 0.0, 0.0, 1250.0)
+
+        app._definir_filtro_pílula("DEBITOS")
+        self.assertEqual(len(app.tree.get_children()), 1)
+
+        app._definir_filtro_pílula("PAGOS")
+        self.assertEqual(len(app.tree.get_children()), 1)
+
+        app._definir_filtro_pílula("TODOS")
+        self.assertEqual(len(app.tree.get_children()), 2)
 
     def test_janela_download_boletos_init(self):
         df_frota = pd.DataFrame([

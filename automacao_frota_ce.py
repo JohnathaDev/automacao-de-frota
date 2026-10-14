@@ -111,6 +111,8 @@ def processar_frota(
             if consultar_lic or consultar_multas:
                 res_detran = scraper.consultar_detran(placa, renavam, consultar_lic, consultar_multas)
                 val_lic = res_detran[0]
+                if str(val_lic).strip() in ["R$ 0,00", "0,00"]:
+                    val_lic = "PAGO"
                 val_multas = res_detran[1]
                 m_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
                 print(f"    -> Detran-CE: Licenciamento={val_lic} | Multas={val_multas} (A vencer: {m_a_vencer})")
@@ -118,6 +120,8 @@ def processar_frota(
 
             if consultar_ipva:
                 val_ipva = scraper.consultar_sefaz_ipva(placa, renavam)
+                if str(val_ipva).strip() in ["R$ 0,00", "0,00"]:
+                    val_ipva = "PAGO"
                 print(f"    -> Sefaz-CE:  IPVA em aberto={val_ipva}")
                 time.sleep(0.4)
 

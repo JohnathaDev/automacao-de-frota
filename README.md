@@ -22,7 +22,8 @@ Sistema corporativo de web scraping e automação veicular com Interface Gráfic
 - **Reconsulta Inteligente (Falhas e Selecionados):** Botão rápido e menu de contexto (clique com botão direito) para reconsultar apenas os veículos que apresentaram falhas temporárias de conexão.
 - **Sessão Unificada no Detran-CE:** Consulta combinada de Licenciamento e Multas na mesma navegação por veículo.
 - **Exportação Multiformato:** Planilha Excel executiva e Relatório PDF em layout Paisagem (A4 Landscape) com cards de indicadores e paginação dinâmica.
-- **Modo Noturno (Dark Mode) Integrado & Notificação Sonora:** Alternância visual em tempo real entre temas claro e escuro, com alerta sonoro configurável ao término do processamento.
+- **Registro Inteligente de Quitação (PAGO):** Quando o IPVA ou Licenciamento retornam zerados (R$ 0,00) ou sem débitos em aberto, o sistema registra automaticamente como "PAGO" com destaque visual verde e sem pendências financeiras.
+- **Design Executivo Premium & Telemetria:** Dashboard com cards ornamentados via curvas Bezier no Canvas, orbe de telemetria em tempo real (*LiveStatusOrb*), barra de filtros em pílulas com contadores dinâmicos (*Todos, Com Débitos, Pagos, Restrições, Falhas*), console de logs com realce sintático e alternância instantânea entre **Modo Claro** e **Modo Noturno**.
 
 ---
 

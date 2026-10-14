@@ -59,6 +59,233 @@ def ocultar_console():
 
 
 # ======================================================================================
+# UTILITÁRIOS GRÁFICOS: DESENHO DE GEOMETRIAS ARREDONDADAS SUAVES (BEZIER)
+# ======================================================================================
+
+def desenhar_retangulo_arredondado(canvas: tk.Canvas, x1: float, y1: float, x2: float, y2: float, radius: int = 10, **kwargs):
+    """
+    Gera um polígono com bordas curvas suaves via algoritmo Bezier nativo do Tkinter (smooth=True).
+    Proporciona o aspecto autêntico de cartões modernos de alta fidelidade (SaaS / Fintech).
+    """
+    r = radius
+    pontos = [
+        x1 + r, y1,
+        x1 + r, y1,
+        x2 - r, y1,
+        x2 - r, y1,
+        x2, y1,
+        x2, y1 + r,
+        x2, y1 + r,
+        x2, y2 - r,
+        x2, y2 - r,
+        x2, y2,
+        x2 - r, y2,
+        x2 - r, y2,
+        x1 + r, y2,
+        x1 + r, y2,
+        x1, y2,
+        x1, y2 - r,
+        x1, y2 - r,
+        x1, y1 + r,
+        x1, y1 + r,
+        x1, y1
+    ]
+    return canvas.create_polygon(pontos, **kwargs, smooth=True)
+
+
+# ======================================================================================
+# COMPONENTE VISUAL: LUXURY METRIC CARD (DASHBOARD FINTECH)
+# ======================================================================================
+
+class LuxuryMetricCard(tk.Canvas):
+    """
+    Card de Métrica Executiva renderizado em Canvas de alta precisão.
+    Conta com cantos arredondados, barra de acento funcional, tipografia hierárquica,
+    ícone de nicho, legenda descritiva e micro-interação de brilho (Hover Glow) ao passar o cursor.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        titulo: str,
+        var_valor: tk.StringVar,
+        icone: str = "📊",
+        cor_acento: str = "#3B82F6",
+        subtexto: str = "✦ Tempo real",
+        modo_noturno: bool = False
+    ):
+        super().__init__(parent, highlightthickness=0, height=88)
+        self.titulo = titulo
+        self.var_valor = var_valor
+        self.icone = icone
+        self.cor_acento = cor_acento
+        self.subtexto = subtexto
+        self.modo_noturno = modo_noturno
+
+        self.is_hover = False
+        self._definir_paleta()
+
+        self.bind("<Configure>", self._ao_redimensionar)
+        self.bind("<Enter>", self._ao_entrar)
+        self.bind("<Leave>", self._ao_sair)
+
+        # Atualização automática em tempo real sempre que a variável mudar
+        self.var_valor.trace_add("write", lambda *_: self.redesenhar())
+
+    def _definir_paleta(self):
+        if self.modo_noturno:
+            self.bg_parent = "#080C14"
+            self.bg_card = "#0F172A"
+            self.border_normal = "#1E293B"
+            self.border_glow = self.cor_acento
+            self.fg_title = "#94A3B8"
+            self.fg_sub = "#64748B"
+            self.fg_val_default = "#F8FAFC"
+        else:
+            self.bg_parent = "#F1F5F9"
+            self.bg_card = "#FFFFFF"
+            self.border_normal = "#E2E8F0"
+            self.border_glow = self.cor_acento
+            self.fg_title = "#475569"
+            self.fg_sub = "#94A3B8"
+            self.fg_val_default = "#0F172A"
+
+        self.configure(bg=self.bg_parent)
+
+    def atualizar_tema(self, modo_noturno: bool):
+        self.modo_noturno = modo_noturno
+        self._definir_paleta()
+        self.redesenhar()
+
+    def _ao_entrar(self, _):
+        self.is_hover = True
+        self.redesenhar()
+
+    def _ao_sair(self, _):
+        self.is_hover = False
+        self.redesenhar()
+
+    def _ao_redimensionar(self, event):
+        self.redesenhar(event.width, event.height)
+
+    def redesenhar(self, w: int = None, h: int = None):
+        w = w or self.winfo_width()
+        h = h or self.winfo_height()
+        if w < 30 or h < 30:
+            return
+
+        self.delete("all")
+        x1, y1, x2, y2 = 4, 4, w - 5, h - 5
+        cor_borda = self.border_glow if self.is_hover else self.border_normal
+        largura_borda = 2 if self.is_hover else 1
+
+        # 1. Fundo com cantos arredondados
+        desenhar_retangulo_arredondado(
+            self, x1, y1, x2, y2, radius=12,
+            fill=self.bg_card, outline=cor_borda, width=largura_borda
+        )
+
+        # 2. Barra de Acento Superior Refinada
+        self.create_rectangle(
+            x1 + 18, y1 + 1, x2 - 18, y1 + 3,
+            fill=self.cor_acento, outline=""
+        )
+
+        # 3. Ícone e Título Superior
+        self.create_text(
+            x1 + 14, y1 + 19,
+            text=f"{self.icone}  {self.titulo}",
+            anchor="w",
+            fill=self.fg_title,
+            font=("Segoe UI", 8, "bold")
+        )
+
+        # 4. Valor Formatado
+        val = self.var_valor.get() or "R$ 0,00"
+        cor_val = self.cor_acento if ("TOTAL" in self.titulo or "R$" in val) else self.fg_val_default
+        self.create_text(
+            x1 + 14, y1 + 46,
+            text=val,
+            anchor="w",
+            fill=cor_val,
+            font=("Segoe UI", 13, "bold")
+        )
+
+        # 5. Micro-Legenda Inferior
+        self.create_text(
+            x1 + 14, y1 + 70,
+            text=self.subtexto,
+            anchor="w",
+            fill=self.fg_sub,
+            font=("Segoe UI", 7)
+        )
+
+
+# ======================================================================================
+# COMPONENTE VISUAL: LIVE STATUS ORB (INDICADOR DE ESTADO PULSANTE)
+# ======================================================================================
+
+class LiveStatusOrb(tk.Canvas):
+    """
+    Badge indicador de conectividade e status com visual de software de missão crítica.
+    Exibe um orbe colorido luminoso acompanhado de texto descritivo de telemetria.
+    """
+
+    def __init__(self, parent: tk.Widget, modo_noturno: bool = False):
+        super().__init__(parent, width=220, height=32, highlightthickness=0)
+        self.modo_noturno = modo_noturno
+        self.status_tipo = "pronto"
+        self.texto_status = "SISTEMA ONLINE & PRONTO"
+        self._atualizar_cores()
+
+    def _atualizar_cores(self):
+        self.bg_canvas = "#080C14" if self.modo_noturno else "#F1F5F9"
+        self.bg_pill = "#111827" if self.modo_noturno else "#FFFFFF"
+        self.border_pill = "#1F2937" if self.modo_noturno else "#E2E8F0"
+        self.fg_text = "#F8FAFC" if self.modo_noturno else "#0F172A"
+        self.configure(bg=self.bg_canvas)
+        self.redesenhar()
+
+    def atualizar_tema(self, modo_noturno: bool):
+        self.modo_noturno = modo_noturno
+        self._atualizar_cores()
+
+    def definir_status(self, tipo: str, texto: str):
+        self.status_tipo = tipo
+        self.texto_status = texto
+        self.redesenhar()
+
+    def redesenhar(self):
+        self.delete("all")
+        w, h = 216, 28
+        desenhar_retangulo_arredondado(
+            self, 2, 2, w, h, radius=8,
+            fill=self.bg_pill, outline=self.border_pill, width=1
+        )
+
+        cores_orbe = {
+            "pronto": ("#10B981", "#34D399"),      # Esmeralda
+            "processando": ("#3B82F6", "#60A5FA"), # Azul Elétrico
+            "pausado": ("#F59E0B", "#FCD34D"),     # Âmbar
+            "erro": ("#EF4444", "#FCA5A5")         # Carmim
+        }
+        cor_base, cor_brilho = cores_orbe.get(self.status_tipo, ("#10B981", "#34D399"))
+
+        # Efeito de Halo/Glow no Orbe
+        self.create_oval(10, 8, 22, 20, fill=cor_brilho, outline="")
+        self.create_oval(12, 10, 20, 18, fill=cor_base, outline="")
+
+        # Texto do Status
+        self.create_text(
+            28, 14,
+            text=self.texto_status,
+            anchor="w",
+            fill=self.fg_text,
+            font=("Segoe UI", 8, "bold")
+        )
+
+
+# ======================================================================================
 # JANELA MODAL: CENTRAL DE DOWNLOAD DE BOLETOS (LICENCIAMENTO E IPVA)
 # ======================================================================================
 
@@ -110,12 +337,31 @@ class JanelaDownloadBoletos(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
 
     def _aplicar_estilo(self):
-        self.bg_root = "#191B22" if self.modo_noturno else "#F0F4F8"
-        self.bg_card = "#21242D" if self.modo_noturno else "#FFFFFF"
-        self.fg_text = "#CBD5E1" if self.modo_noturno else "#2D3748"
-        self.fg_title = "#E2E8F0" if self.modo_noturno else "#1A365D"
-        self.fg_muted = "#8E99A8" if self.modo_noturno else "#64748B"
+        if self.modo_noturno:
+            self.bg_root = "#080C14"
+            self.bg_card = "#0F172A"
+            self.fg_text = "#E2E8F0"
+            self.fg_title = "#F8FAFC"
+            self.fg_muted = "#94A3B8"
+            self.border_card = "#1F2937"
+            self.bg_item = "#151F32"
+        else:
+            self.bg_root = "#F1F5F9"
+            self.bg_card = "#FFFFFF"
+            self.fg_text = "#1E293B"
+            self.fg_title = "#0F172A"
+            self.fg_muted = "#64748B"
+            self.border_card = "#CBD5E1"
+            self.bg_item = "#F8FAFC"
+
         self.configure(bg=self.bg_root)
+
+        style = ttk.Style(self)
+        style.configure("PremiumBoleto.TFrame", background=self.bg_root)
+        style.configure("PremiumBoletoCard.TFrame", background=self.bg_card)
+        style.configure("PremiumItem.TFrame", background=self.bg_item)
+        style.configure("PrimaryDownload.TButton", font=("Segoe UI", 9, "bold"), background="#059669", foreground="#FFFFFF", padding=(14, 7))
+        style.map("PrimaryDownload.TButton", background=[("active", "#047857"), ("disabled", "#4B5563")])
 
     def _identificar_debitos(self):
         """Varre a memória de resultados para encontrar os veículos elegíveis a emissão de boleto."""
@@ -153,18 +399,19 @@ class JanelaDownloadBoletos(tk.Toplevel):
                 })
 
     def _criar_layout(self):
-        container = ttk.Frame(self, padding="14 14 14 14")
+        container = ttk.Frame(self, style="PremiumBoleto.TFrame", padding="16 14 16 14")
         container.pack(fill=tk.BOTH, expand=True)
 
-        # 1. Cabeçalho
-        frame_header = ttk.Frame(container)
-        frame_header.pack(fill=tk.X, pady=(0, 10))
+        # 1. Header Executivo do Modal
+        frame_header = tk.Frame(container, bg=self.bg_card, relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.border_card)
+        frame_header.pack(fill=tk.X, pady=(0, 12), ipady=8, ipadx=10)
 
-        lbl_tit = ttk.Label(
+        lbl_tit = tk.Label(
             frame_header,
-            text="📥 Emissão e Download de Boletos em Lote",
-            font=("Segoe UI", 13, "bold"),
-            foreground=self.fg_title
+            text="📥 Central Executiva de Emissão de Boletos (PDF)",
+            font=("Segoe UI", 12, "bold"),
+            bg=self.bg_card,
+            fg=self.fg_title
         )
         lbl_tit.pack(anchor="w")
 
@@ -172,196 +419,121 @@ class JanelaDownloadBoletos(tk.Toplevel):
         pasta_prevista = os.path.join(self.pasta_destino_base, f"Licenciamento-IPVA ({data_hoje})")
         vencimento_ipva = obter_ultimo_dia_util_mes()
 
-        lbl_sub = ttk.Label(
-            frame_header,
-            text=(
-                f"Destino: {pasta_prevista}\n"
-                f"Padrão dos arquivos: [PLACA] LICENCIAMENTO {data_hoje}.pdf  |  [PLACA] IPVA {data_hoje}.pdf\n"
-                f"📅 Vencimento do IPVA: {vencimento_ipva} (Último dia útil do mês)"
-            ),
-            font=("Segoe UI", 8),
-            foreground=self.fg_muted
+        sub_msg = (
+            f"Diretório Destino: {pasta_prevista}\n"
+            f"📅 Vencimento Legal do IPVA: {vencimento_ipva} (Último dia útil do mês)"
         )
-        lbl_sub.pack(anchor="w", pady=(2, 0))
+        lbl_sub = tk.Label(frame_header, text=sub_msg, font=("Segoe UI", 8), bg=self.bg_card, fg=self.fg_muted, justify=tk.LEFT)
+        lbl_sub.pack(anchor="w", pady=(3, 0))
 
-        # 2. Barra de Seleção Rápida
-        frame_controles = ttk.LabelFrame(container, text=" Seleção Rápida ", style="Card.TLabelframe", padding="8 6 8 6")
-        frame_controles.pack(fill=tk.X, pady=(0, 10))
+        # 2. Barra de Seleção Rápida em Pílulas
+        frame_acoes = tk.Frame(container, bg=self.bg_card, relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.border_card)
+        frame_acoes.pack(fill=tk.X, pady=(0, 10), ipady=6, ipadx=8)
 
-        ttk.Button(
-            frame_controles,
-            text="☑ Selecionar Todos Licenciamento",
-            style="Muted.TButton",
-            command=self._marcar_todos_licenciamento
-        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(frame_acoes, text="☑️ Marcar Licenciamento", style="Muted.TButton", command=self._marcar_todos_licenciamento).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(frame_acoes, text="☑️ Marcar IPVA", style="Muted.TButton", command=self._marcar_todos_ipva).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(frame_acoes, text="☑️ Marcar Tudo", style="Muted.TButton", command=self._marcar_tudo).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(frame_acoes, text="☐ Desmarcar", style="Muted.TButton", command=self._desmarcar_tudo).pack(side=tk.LEFT, padx=(0, 10))
 
-        ttk.Button(
-            frame_controles,
-            text="☑ Selecionar Todos IPVA",
-            style="Muted.TButton",
-            command=self._marcar_todos_ipva
-        ).pack(side=tk.LEFT, padx=(0, 6))
-
-        ttk.Button(
-            frame_controles,
-            text="☑ Marcar Todos",
-            style="Muted.TButton",
-            command=self._marcar_tudo
-        ).pack(side=tk.LEFT, padx=(0, 6))
-
-        ttk.Button(
-            frame_controles,
-            text="☐ Desmarcar Todos",
-            style="Muted.TButton",
-            command=self._desmarcar_tudo
-        ).pack(side=tk.LEFT)
-
-        lbl_info = ttk.Label(
-            frame_controles,
+        self.lbl_contador_modal = tk.Label(
+            frame_acoes,
             text=f"Veículos com débitos: {len(self.itens_boletos)}",
             font=("Segoe UI", 9, "bold"),
-            foreground=self.fg_title
+            bg=self.bg_card,
+            fg=self.fg_title
         )
-        lbl_info.pack(side=tk.RIGHT)
+        self.lbl_contador_modal.pack(side=tk.RIGHT)
 
-        # 3. Lista Rolável de Veículos
-        frame_lista = ttk.LabelFrame(container, text=" Veículos com Débitos Pendentes ", style="Card.TLabelframe", padding="6 6 6 6")
-        frame_lista.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        # 3. Lista de Veículos com Contêiner Rolável
+        frame_scroll = tk.Frame(container, bg=self.bg_card, relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.border_card)
+        frame_scroll.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
-        canvas = tk.Canvas(frame_lista, bg=self.bg_card, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(frame_lista, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas, style="Card.TFrame")
+        canvas = tk.Canvas(frame_scroll, bg=self.bg_card, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(frame_scroll, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas, style="PremiumBoletoCard.TFrame")
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Cabeçalho da tabela interna
-        f_hd = ttk.Frame(scrollable_frame, style="Card.TFrame")
-        f_hd.pack(fill=tk.X, pady=(0, 4), padx=4)
-        ttk.Label(f_hd, text="Placa / RENAVAM", font=("Segoe UI", 9, "bold"), width=22, style="Card.TLabel").pack(side=tk.LEFT)
-        ttk.Label(f_hd, text="Boleto de Licenciamento", font=("Segoe UI", 9, "bold"), width=30, style="Card.TLabel").pack(side=tk.LEFT)
-        ttk.Label(f_hd, text="DAE de IPVA", font=("Segoe UI", 9, "bold"), width=30, style="Card.TLabel").pack(side=tk.LEFT)
-        ttk.Label(f_hd, text="Status", font=("Segoe UI", 9, "bold"), width=16, style="Card.TLabel").pack(side=tk.LEFT)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=4)
 
         if not self.itens_boletos:
-            ttk.Label(
+            lbl_vazio = tk.Label(
                 scrollable_frame,
-                text="Nenhum veículo com débitos pendentes de Licenciamento ou IPVA.",
+                text="🎉 Nenhum veículo com débitos pendentes elegíveis para emissão de boletos.",
                 font=("Segoe UI", 9, "italic"),
-                foreground=self.fg_muted,
-                style="Card.TLabel"
-            ).pack(pady=20)
+                bg=self.bg_card,
+                fg=self.fg_muted
+            )
+            lbl_vazio.pack(padx=20, pady=40)
         else:
             for item in self.itens_boletos:
-                f_row = ttk.Frame(scrollable_frame, style="Card.TFrame")
-                f_row.pack(fill=tk.X, pady=2, padx=4)
+                card_item = tk.Frame(scrollable_frame, bg=self.bg_item, relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.border_card)
+                card_item.pack(fill=tk.X, expand=True, padx=4, pady=3, ipady=4, ipadx=6)
 
-                # Coluna 1: Placa e RENAVAM
-                texto_id = f"🚘 {item['placa']} ({item['renavam']})"
-                ttk.Label(f_row, text=texto_id, width=22, font=("Segoe UI", 9, "bold"), style="Card.TLabel").pack(side=tk.LEFT)
+                # Badge Monospace para Placa
+                lbl_placa = tk.Label(card_item, text=f"🚗 {item['placa']}", font=("Consolas", 10, "bold"), bg=self.bg_item, fg=self.fg_title)
+                lbl_placa.pack(side=tk.LEFT, padx=(6, 12))
 
-                # Coluna 2: Licenciamento Checkbox
+                lbl_ren = tk.Label(card_item, text=f"RENAVAM: {item['renavam']}", font=("Segoe UI", 8), bg=self.bg_item, fg=self.fg_muted)
+                lbl_ren.pack(side=tk.LEFT, padx=(0, 16))
+
+                # Opção de Licenciamento
                 if item["tem_lic"]:
-                    txt_chk_lic = f"Licenciamento: {item['val_lic_str']}"
-                    chk_lic = ttk.Checkbutton(
-                        f_row,
-                        text=txt_chk_lic,
-                        variable=item["var_lic"],
-                        style="Card.TCheckbutton",
-                        width=28
-                    )
-                    chk_lic.pack(side=tk.LEFT)
+                    chk_lic = ttk.Checkbutton(card_item, text=f"Licenciamento ({item['val_lic_str']})", variable=item["var_lic"], style="Card.TCheckbutton")
+                    chk_lic.pack(side=tk.LEFT, padx=(0, 14))
                 else:
-                    ttk.Label(f_row, text="Regular (R$ 0,00)", foreground=self.fg_muted, width=28, style="Card.TLabel").pack(side=tk.LEFT)
+                    lbl_sem_lic = tk.Label(card_item, text="Licenciamento: Isento/Pago", font=("Segoe UI", 8), bg=self.bg_item, fg="#10B981")
+                    lbl_sem_lic.pack(side=tk.LEFT, padx=(0, 14))
 
-                # Coluna 3: IPVA Checkbox
+                # Opção de IPVA
                 if item["tem_ipva"]:
-                    txt_chk_ipva = f"IPVA: {item['val_ipva_str']}"
-                    chk_ipva = ttk.Checkbutton(
-                        f_row,
-                        text=txt_chk_ipva,
-                        variable=item["var_ipva"],
-                        style="Card.TCheckbutton",
-                        width=28
-                    )
-                    chk_ipva.pack(side=tk.LEFT)
+                    chk_ipva = ttk.Checkbutton(card_item, text=f"IPVA ({item['val_ipva_str']})", variable=item["var_ipva"], style="Card.TCheckbutton")
+                    chk_ipva.pack(side=tk.LEFT, padx=(0, 14))
                 else:
-                    ttk.Label(f_row, text="Regular (R$ 0,00)", foreground=self.fg_muted, width=28, style="Card.TLabel").pack(side=tk.LEFT)
+                    lbl_sem_ipva = tk.Label(card_item, text="IPVA: Isento/Pago", font=("Segoe UI", 8), bg=self.bg_item, fg="#10B981")
+                    lbl_sem_ipva.pack(side=tk.LEFT, padx=(0, 14))
 
-                # Coluna 4: Status do Download
-                lbl_st = ttk.Label(f_row, text="Pendente", font=("Segoe UI", 8), foreground=self.fg_muted, width=16, style="Card.TLabel")
-                lbl_st.pack(side=tk.LEFT)
+                # Status Individual
+                lbl_st = tk.Label(card_item, text="Pendente", font=("Segoe UI", 8, "bold"), bg=self.bg_item, fg=self.fg_muted)
+                lbl_st.pack(side=tk.RIGHT, padx=6)
                 item["lbl_status"] = lbl_st
 
-        # 4. Progresso e Ações Finais
-        frame_rodape = ttk.Frame(container)
+        # 4. Rodapé e Botões de Comando
+        frame_rodape = ttk.Frame(container, style="PremiumBoleto.TFrame")
         frame_rodape.pack(fill=tk.X)
 
         self.var_progresso_txt = tk.StringVar(value="Selecione os boletos desejados e clique em Iniciar Download.")
-        self.lbl_progresso = ttk.Label(
-            frame_rodape,
-            textvariable=self.var_progresso_txt,
-            font=("Segoe UI", 9, "bold"),
-            foreground=self.fg_title
-        )
+        self.lbl_progresso = ttk.Label(frame_rodape, textvariable=self.var_progresso_txt, font=("Segoe UI", 8, "bold"))
         self.lbl_progresso.pack(anchor="w", pady=(0, 4))
 
         self.barra_progresso = ttk.Progressbar(frame_rodape, mode="determinate")
         self.barra_progresso.pack(fill=tk.X, pady=(0, 8))
 
-        frame_botoes = ttk.Frame(frame_rodape)
+        frame_botoes = ttk.Frame(frame_rodape, style="PremiumBoleto.TFrame")
         frame_botoes.pack(fill=tk.X)
 
         self.btn_iniciar_dl = ttk.Button(
             frame_botoes,
-            text="🚀 Iniciar Download dos Boletos",
-            style="Action.TButton",
+            text="⚡ Iniciar Download dos Boletos",
+            style="PrimaryDownload.TButton",
             state="normal" if self.itens_boletos else "disabled",
             command=self._iniciar_downloads
         )
         self.btn_iniciar_dl.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.btn_pausar_dl = ttk.Button(
-            frame_botoes,
-            text="⏸️ Pausar",
-            style="Secondary.TButton",
-            state="disabled",
-            command=self._alternar_pausa_downloads
-        )
+        self.btn_pausar_dl = ttk.Button(frame_botoes, text="⏸️ Pausar", style="Secondary.TButton", state="disabled", command=self._alternar_pausa_downloads)
         self.btn_pausar_dl.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.btn_cancelar_dl = ttk.Button(
-            frame_botoes,
-            text="⏹️ Cancelar",
-            style="Danger.TButton",
-            state="disabled",
-            command=self._cancelar_downloads
-        )
+        self.btn_cancelar_dl = ttk.Button(frame_botoes, text="⏹️ Cancelar", style="Danger.TButton", state="disabled", command=self._cancelar_downloads)
         self.btn_cancelar_dl.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.btn_abrir_pasta_boletos = ttk.Button(
-            frame_botoes,
-            text="📂 Abrir Pasta dos Boletos",
-            style="Secondary.TButton",
-            state="disabled",
-            command=self._abrir_pasta_boletos
-        )
+        self.btn_abrir_pasta_boletos = ttk.Button(frame_botoes, text="📂 Abrir Pasta", style="Secondary.TButton", state="disabled", command=self._abrir_pasta_boletos)
         self.btn_abrir_pasta_boletos.pack(side=tk.LEFT)
 
-        ttk.Button(
-            frame_botoes,
-            text="Fechar",
-            style="Secondary.TButton",
-            command=self._ao_fechar
-        ).pack(side=tk.RIGHT)
+        ttk.Button(frame_botoes, text="Fechar", style="Muted.TButton", command=self._ao_fechar).pack(side=tk.RIGHT)
 
     def _marcar_todos_licenciamento(self):
         for item in self.itens_boletos:
@@ -631,6 +803,10 @@ class AppConsultaFrotaGUI:
         # Modo Noturno
         self.modo_noturno = self.cfg.get("modo_noturno", False)
         self.cards_metricas = []
+        self.luxury_cards: list[LuxuryMetricCard] = []
+        self.status_orb: LiveStatusOrb | None = None
+        self.botoes_filtro: dict[str, ttk.Button] = {}
+        self.filtro_ativo = "TODOS"
 
         self.style = ttk.Style()
         try:
@@ -660,73 +836,83 @@ class AppConsultaFrotaGUI:
         ConfigManager.salvar(self.cfg)
 
     def _aplicar_tema(self):
-        """Aplica tokens visuais confortáveis para Modo Claro e Modo Noturno."""
+        """Aplica tokens visuais de alta classe para Modo Claro e Modo Noturno."""
         if self.modo_noturno:
-            bg_root = "#191B22"
-            bg_card = "#21242D"
-            border_card = "#2F333F"
-            fg_title = "#E2E8F0"
-            fg_sub = "#8E99A8"
-            fg_text = "#CBD5E1"
-            bg_tree = "#21242D"
-            fg_tree = "#CBD5E1"
-            bg_tree_hd = "#2A2E3B"
-            fg_tree_hd = "#E2E8F0"
-            bg_sel = "#353D52"
-            fg_sel = "#F8FAFC"
-            bg_tab = "#1B1D24"
-            fg_tab = "#8E99A8"
-            bg_tab_sel = "#21242D"
-            fg_tab_sel = "#9BB3D6"
-            bg_log = "#181A20"
-            fg_log = "#A5B4C7"
-            status_fg = "#9BB3D6"
-            bg_btn_sec = "#2D323E"
-            fg_btn_sec = "#CBD5E1"
-            bg_btn_sec_act = "#393F4E"
-            bg_btn_muted = "#2A2E3A"
-            fg_btn_muted = "#CBD5E1"
-            bg_btn_theme = "#2A2E3A"
-            fg_btn_theme = "#CBD5E1"
-            bg_btn_pri = "#354A6B"
-            bg_btn_pri_act = "#2C3E5A"
-            bg_btn_act = "#2D5A43"
-            bg_btn_act_act = "#244936"
-            bg_btn_dng = "#6B3838"
-            bg_btn_dng_act = "#582E2E"
-        else:
-            bg_root = "#F0F4F8"
-            bg_card = "#FFFFFF"
-            border_card = "#CBD5E1"
-            fg_title = "#1A365D"
-            fg_sub = "#4A5568"
-            fg_text = "#2D3748"
-            bg_tree = "#FFFFFF"
-            fg_tree = "#2D3748"
-            bg_tree_hd = "#E2E8F0"
-            fg_tree_hd = "#1A365D"
-            bg_sel = "#BEE3F8"
-            fg_sel = "#1A365D"
-            bg_tab = "#E2E8F0"
-            fg_tab = "#4A5568"
-            bg_tab_sel = "#FFFFFF"
-            fg_tab_sel = "#1A365D"
-            bg_log = "#1A202C"
+            bg_root = "#080C14"        # Fundo Noturno Ultra Deep
+            bg_card = "#0F172A"        # Superfície de Cartão Noturno
+            border_card = "#1F2937"    # Contorno Discreto 1px
+            fg_title = "#F8FAFC"
+            fg_sub = "#94A3B8"
+            fg_text = "#E2E8F0"
+            bg_tree = "#0B0F19"
+            fg_tree = "#E2E8F0"
+            bg_tree_hd = "#141D2E"
+            fg_tree_hd = "#F8FAFC"
+            bg_sel = "#1E293B"
+            fg_sel = "#38BDF8"
+            bg_tab = "#080C14"
+            fg_tab = "#94A3B8"
+            bg_tab_sel = "#0F172A"
+            fg_tab_sel = "#38BDF8"
+            bg_log = "#05070B"
             fg_log = "#E2E8F0"
-            status_fg = "#1A365D"
-            bg_btn_sec = "#4A5568"
-            fg_btn_sec = "#FFFFFF"
-            bg_btn_sec_act = "#2D3748"
-            bg_btn_muted = "#E2E8F0"
-            fg_btn_muted = "#2D3748"
-            bg_btn_theme = "#E2E8F0"
-            fg_btn_theme = "#1A365D"
+            status_fg = "#38BDF8"
+            bg_btn_sec = "#1E293B"
+            fg_btn_sec = "#E2E8F0"
+            bg_btn_sec_act = "#334155"
+            bg_btn_muted = "#141C2B"
+            fg_btn_muted = "#94A3B8"
+            bg_btn_muted_act = "#1E293B"
+            bg_btn_theme = "#141C2B"
+            fg_btn_theme = "#38BDF8"
             bg_btn_pri = "#2563EB"
             bg_btn_pri_act = "#1D4ED8"
-            bg_btn_act = "#16A34A"
-            bg_btn_act_act = "#15803D"
-            bg_btn_dng = "#DC2626"
-            bg_btn_dng_act = "#B91C1C"
+            bg_btn_act = "#059669"
+            bg_btn_act_act = "#047857"
+            bg_btn_dng = "#9F1239"
+            bg_btn_dng_act = "#881337"
+            prog_bg = "#38BDF8"
+            prog_trough = "#1E293B"
+            self.border_card_atual = border_card
+            self.border_card_hover_atual = "#38BDF8"
+        else:
+            bg_root = "#F1F5F9"        # Fundo Claro Porcelana
+            bg_card = "#FFFFFF"        # Superfície Branco Puro
+            border_card = "#CBD5E1"    # Contorno Suave 1px
+            fg_title = "#0F172A"       # Título Titânio Profundo
+            fg_sub = "#475569"
+            fg_text = "#1E293B"
+            bg_tree = "#FFFFFF"
+            fg_tree = "#1E293B"
+            bg_tree_hd = "#E2E8F0"
+            fg_tree_hd = "#0F172A"
+            bg_sel = "#E0E7FF"
+            fg_sel = "#1E3A8A"
+            bg_tab = "#F1F5F9"
+            fg_tab = "#64748B"
+            bg_tab_sel = "#FFFFFF"
+            fg_tab_sel = "#1E40AF"
+            bg_log = "#0F172A"
+            fg_log = "#F8FAFC"
+            status_fg = "#1E40AF"
+            bg_btn_sec = "#334155"
+            fg_btn_sec = "#FFFFFF"
+            bg_btn_sec_act = "#1E293B"
+            bg_btn_muted = "#E2E8F0"
+            fg_btn_muted = "#334155"
+            bg_btn_muted_act = "#CBD5E1"
+            bg_btn_theme = "#E2E8F0"
+            fg_btn_theme = "#0F172A"
+            bg_btn_pri = "#1E40AF"
+            bg_btn_pri_act = "#1D4ED8"
+            bg_btn_act = "#0D9488"
+            bg_btn_act_act = "#0F766E"
+            bg_btn_dng = "#E11D48"
+            bg_btn_dng_act = "#BE123C"
+            prog_bg = "#2563EB"
+            prog_trough = "#E2E8F0"
+            self.border_card_atual = border_card
+            self.border_card_hover_atual = "#2563EB"
 
         self.root.configure(bg=bg_root)
         self.style.configure(".", background=bg_root, foreground=fg_text, font=("Segoe UI", 9))
@@ -734,73 +920,96 @@ class AppConsultaFrotaGUI:
         self.style.configure("Card.TFrame", background=bg_card)
         self.style.configure("TLabel", background=bg_root, foreground=fg_text)
         self.style.configure("Card.TLabel", background=bg_card, foreground=fg_text)
-        self.style.configure("Header.TLabel", background=bg_root, font=("Segoe UI", 14, "bold"), foreground=fg_title)
-        self.style.configure("SubHeader.TLabel", background=bg_root, font=("Segoe UI", 9), foreground=fg_sub)
+        self.style.configure("Header.TLabel", background=bg_root, font=("Segoe UI", 13, "bold"), foreground=fg_title)
+        self.style.configure("SubHeader.TLabel", background=bg_root, font=("Segoe UI", 8), foreground=fg_sub)
 
         self.style.configure("Card.TLabelframe", background=bg_card, relief=tk.SOLID, borderwidth=1)
         self.style.configure("Card.TLabelframe.Label", font=("Segoe UI", 9, "bold"), foreground=fg_title, background=bg_root)
-        self.style.configure("Card.TCheckbutton", background=bg_card, foreground=fg_text)
+        self.style.configure("Card.TCheckbutton", background=bg_card, foreground=fg_text, font=("Segoe UI", 9))
         self.style.map("Card.TCheckbutton", background=[("active", bg_card)], foreground=[("active", fg_title)])
-        self.style.configure("Card.TRadiobutton", background=bg_card, foreground=fg_text)
+        self.style.configure("Card.TRadiobutton", background=bg_card, foreground=fg_text, font=("Segoe UI", 9))
         self.style.map("Card.TRadiobutton", background=[("active", bg_card)], foreground=[("active", fg_title)])
 
-        self.style.configure("Primary.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_pri, foreground="#FFFFFF", padding=(10, 6))
+        self.style.configure("Primary.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_pri, foreground="#FFFFFF", padding=(14, 7))
         self.style.map("Primary.TButton", background=[("active", bg_btn_pri_act), ("disabled", "#4B5563" if self.modo_noturno else "#94A3B8")])
 
-        self.style.configure("Action.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_act, foreground="#FFFFFF", padding=(12, 6))
+        self.style.configure("Action.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_act, foreground="#FFFFFF", padding=(14, 7))
         self.style.map("Action.TButton", background=[("active", bg_btn_act_act), ("disabled", "#4B5563" if self.modo_noturno else "#94A3B8")])
 
-        self.style.configure("Danger.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_dng, foreground="#FFFFFF", padding=(9, 6))
+        self.style.configure("Danger.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_dng, foreground="#FFFFFF", padding=(10, 6))
         self.style.map("Danger.TButton", background=[("active", bg_btn_dng_act), ("disabled", "#4B5563" if self.modo_noturno else "#94A3B8")])
 
-        self.style.configure("Secondary.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_sec, foreground=fg_btn_sec, padding=(9, 5))
-        self.style.map("Secondary.TButton", background=[("active", bg_btn_sec_act), ("disabled", "#4B5563" if self.modo_noturno else "#64748B")])
+        self.style.configure("Secondary.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_sec, foreground=fg_btn_sec, padding=(10, 5))
+        self.style.map("Secondary.TButton", background=[("active", bg_btn_sec_act), ("disabled", "#4B5563" if self.modo_noturno else "#94A3B8")])
 
-        self.style.configure("Muted.TButton", font=("Segoe UI", 8), background=bg_btn_muted, foreground=fg_btn_muted, padding=(6, 3))
-        self.style.map("Muted.TButton", background=[("active", bg_btn_sec_act if self.modo_noturno else "#CBD5E1")])
+        self.style.configure("Muted.TButton", font=("Segoe UI", 8), background=bg_btn_muted, foreground=fg_btn_muted, padding=(8, 4))
+        self.style.map("Muted.TButton", background=[("active", bg_btn_muted_act)])
 
-        self.style.configure("Theme.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_theme, foreground=fg_btn_theme, padding=(8, 4))
+        self.style.configure("ActiveFilter.TButton", font=("Segoe UI", 8, "bold"), background=bg_btn_pri, foreground="#FFFFFF", padding=(9, 4))
+        self.style.map("ActiveFilter.TButton", background=[("active", bg_btn_pri_act)])
+
+        self.style.configure("Theme.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_theme, foreground=fg_btn_theme, padding=(10, 4))
         self.style.map("Theme.TButton", background=[("active", bg_btn_sec_act if self.modo_noturno else "#CBD5E1")])
 
         self.style.configure("TNotebook", background=bg_card, borderwidth=0)
-        self.style.configure("TNotebook.Tab", background=bg_tab, foreground=fg_tab, padding=(12, 6), font=("Segoe UI", 9, "bold"))
+        self.style.configure("TNotebook.Tab", background=bg_tab, foreground=fg_tab, padding=(18, 7), font=("Segoe UI", 9, "bold"))
         self.style.map("TNotebook.Tab", background=[("selected", bg_tab_sel)], foreground=[("selected", fg_tab_sel)])
 
-        self.style.configure("Treeview", background=bg_tree, foreground=fg_tree, fieldbackground=bg_tree, rowheight=24, font=("Segoe UI", 9))
-        self.style.configure("Treeview.Heading", background=bg_tree_hd, foreground=fg_tree_hd, font=("Segoe UI", 9, "bold"), padding=(4, 5))
+        self.style.configure("Treeview", background=bg_tree, foreground=fg_tree, fieldbackground=bg_tree, rowheight=28, font=("Segoe UI", 9))
+        self.style.configure("Treeview.Heading", background=bg_tree_hd, foreground=fg_tree_hd, font=("Segoe UI", 9, "bold"), padding=(6, 7))
         self.style.map("Treeview", background=[("selected", bg_sel)], foreground=[("selected", fg_sel)])
+
+        self.style.configure("Horizontal.TProgressbar", background=prog_bg, troughcolor=prog_trough, bordercolor=prog_trough, thickness=8)
+        self.style.configure("TEntry", fieldbackground=bg_card, foreground=fg_text, padding=(6, 4))
+        self.style.configure("TCombobox", fieldbackground=bg_card, background=bg_btn_muted, foreground=fg_text, padding=(5, 4))
 
         if hasattr(self, "tree"):
             if self.modo_noturno:
-                self.tree.tag_configure("pendente", foreground="#7D8799")
-                self.tree.tag_configure("processando", background="#232B3B", foreground="#9BB3D6", font=("Segoe UI", 9, "bold"))
-                self.tree.tag_configure("com_debito", background="#332225", foreground="#DDA0A8", font=("Segoe UI", 9, "bold"))
-                self.tree.tag_configure("sem_debito", background="#1E2B24", foreground="#90BE9F")
-                self.tree.tag_configure("falha", background="#332B1E", foreground="#D8B983", font=("Segoe UI", 9, "bold"))
-                self.tree.tag_configure("restricao", background="#382618", foreground="#FDBA74", font=("Segoe UI", 9, "bold"))
-                self.tree.tag_configure("pago", background="#1E2B24", foreground="#86EFAC")
+                self.tree.tag_configure("row_even", background="#0B0F19")
+                self.tree.tag_configure("row_odd", background="#0E1422")
+                self.tree.tag_configure("pendente", foreground="#64748B")
+                self.tree.tag_configure("processando", background="#162742", foreground="#93C5FD", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("com_debito", background="#38181C", foreground="#FCA5A5", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("sem_debito", background="#0F172A", foreground="#94A3B8")
+                self.tree.tag_configure("falha", background="#382914", foreground="#FCD34D", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("restricao", background="#382115", foreground="#FDBA74", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("pago", background="#132E22", foreground="#86EFAC")
             else:
-                self.tree.tag_configure("pendente", foreground="#718096")
-                self.tree.tag_configure("processando", background="#EBF8FF", foreground="#2B6CB0", font=("Segoe UI", 9, "bold"))
-                self.tree.tag_configure("com_debito", background="#FFF5F5", foreground="#C53030", font=("Segoe UI", 9, "bold"))
-                self.tree.tag_configure("sem_debito", background="#F0FFF4", foreground="#276749")
-                self.tree.tag_configure("falha", background="#FEF3C7", foreground="#B45309", font=("Segoe UI", 9, "bold"))
-                self.tree.tag_configure("restricao", background="#FFEDD5", foreground="#C2410C", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("row_even", background="#FFFFFF")
+                self.tree.tag_configure("row_odd", background="#F8FAFC")
+                self.tree.tag_configure("pendente", foreground="#64748B")
+                self.tree.tag_configure("processando", background="#EFF6FF", foreground="#1D4ED8", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("com_debito", background="#FEE2E2", foreground="#991B1B", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("sem_debito", background="#F8FAFC", foreground="#475569")
+                self.tree.tag_configure("falha", background="#FEF3C7", foreground="#92400E", font=("Segoe UI", 9, "bold"))
+                self.tree.tag_configure("restricao", background="#FFEDD5", foreground="#9A3412", font=("Segoe UI", 9, "bold"))
                 self.tree.tag_configure("pago", background="#DCFCE7", foreground="#166534")
 
         if hasattr(self, "txt_logs"):
-            self.txt_logs.configure(bg=bg_log, fg=fg_log, insertbackground=fg_log)
+            self.txt_logs.configure(bg=bg_log, fg=fg_log, insertbackground=fg_text)
+            cor_time = "#64748B"
+            cor_info = "#38BDF8" if self.modo_noturno else "#0284C7"
+            cor_suc = "#34D399" if self.modo_noturno else "#059669"
+            cor_warn = "#FBBF24" if self.modo_noturno else "#D97706"
+            cor_err = "#F87171" if self.modo_noturno else "#DC2626"
+            self.txt_logs.tag_configure("tag_time", foreground=cor_time, font=("Consolas", 8))
+            self.txt_logs.tag_configure("tag_info", foreground=cor_info, font=("Consolas", 9, "bold"))
+            self.txt_logs.tag_configure("tag_sucesso", foreground=cor_suc, font=("Consolas", 9, "bold"))
+            self.txt_logs.tag_configure("tag_alerta", foreground=cor_warn, font=("Consolas", 9, "bold"))
+            self.txt_logs.tag_configure("tag_erro", foreground=cor_err, font=("Consolas", 9, "bold"))
+            self.txt_logs.tag_configure("tag_corpo", foreground=fg_log, font=("Consolas", 9))
 
         if hasattr(self, "lbl_status"):
             self.lbl_status.configure(foreground=status_fg)
 
-        for card_frame, lbl_titulo, lbl_valor, cor_l, cor_d in self.cards_metricas:
-            card_frame.configure(bg=bg_card, highlightbackground=border_card)
-            lbl_titulo.configure(bg=bg_card, fg=fg_sub)
-            lbl_valor.configure(bg=bg_card, fg=cor_d if self.modo_noturno else cor_l)
-
         if hasattr(self, "btn_tema"):
             self.btn_tema.configure(text="☀️ Modo Claro" if self.modo_noturno else "🌙 Modo Noturno")
+
+        for card in self.luxury_cards:
+            card.atualizar_tema(self.modo_noturno)
+
+        if self.status_orb:
+            self.status_orb.atualizar_tema(self.modo_noturno)
 
     def _alternar_tema(self):
         self.modo_noturno = not self.modo_noturno
@@ -808,45 +1017,64 @@ class AppConsultaFrotaGUI:
         self._aplicar_tema()
 
     def _criar_layout(self):
-        container = ttk.Frame(self.root, padding="14 14 14 14")
+        container = ttk.Frame(self.root, padding="14 12 14 12")
         container.pack(fill=tk.BOTH, expand=True)
 
-        # 1. BARRA SUPERIOR
+        # 1. BARRA SUPERIOR ELEGANTE (BRANDING & TELEMETRIA)
         frame_topo = ttk.Frame(container)
-        frame_topo.pack(fill=tk.X, pady=(0, 8))
+        frame_topo.pack(fill=tk.X, pady=(0, 10))
 
         frame_titulos = ttk.Frame(frame_topo)
         frame_titulos.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        frame_marca = ttk.Frame(frame_titulos)
+        frame_marca.pack(anchor="w")
+
+        lbl_badge = tk.Label(
+            frame_marca,
+            text="⚡ FLEET COMMAND",
+            font=("Segoe UI", 7, "bold"),
+            bg="#2563EB",
+            fg="#FFFFFF",
+            padx=6,
+            pady=1
+        )
+        lbl_badge.pack(side=tk.LEFT, padx=(0, 8))
+
         lbl_titulo = ttk.Label(
-            frame_titulos,
-            text="🚗 Consulta de Débitos de Frota - Detran/Sefaz CE",
+            frame_marca,
+            text="Automação & Inteligência de Frota",
             style="Header.TLabel"
         )
-        lbl_titulo.pack(anchor="w")
+        lbl_titulo.pack(side=tk.LEFT)
 
         lbl_subtitulo = ttk.Label(
             frame_titulos,
-            text="Versão 3.0 Corporativa | Automação com auto-heal, download de boletos e múltiplos workers",
+            text="Detran-CE & Sefaz-CE  •  Auditoria Financeira em Lote, Download de Boletos & Relatórios Executivos",
             style="SubHeader.TLabel"
         )
-        lbl_subtitulo.pack(anchor="w", pady=(1, 0))
+        lbl_subtitulo.pack(anchor="w", pady=(2, 0))
 
+        # Orbe de Status
+        self.status_orb = LiveStatusOrb(frame_topo, modo_noturno=self.modo_noturno)
+        self.status_orb.pack(side=tk.RIGHT, padx=(10, 0))
+
+        # Botão de Tema
         self.btn_tema = ttk.Button(
             frame_topo,
             text="🌙 Modo Noturno",
             style="Theme.TButton",
             command=self._alternar_tema
         )
-        self.btn_tema.pack(side=tk.RIGHT, padx=(8, 0))
+        self.btn_tema.pack(side=tk.RIGHT, padx=(8, 0), pady=2)
 
-        # 2. CARD: ENTRADA E CONFIGURAÇÕES
-        frame_configs = ttk.LabelFrame(container, text=" Configurações e Arquivo ", style="Card.TLabelframe", padding="8 8 8 8")
+        # 2. PAINEL DE CONTROLE EXECUTIVO (CONFIGURAÇÕES E ARQUIVO)
+        frame_configs = ttk.LabelFrame(container, text=" Painel de Controle e Parâmetros da Frota ", style="Card.TLabelframe", padding="12 10 12 10")
         frame_configs.pack(fill=tk.X, pady=(0, 8))
 
-        # Linha 1: Seleção de Planilha e Destino
+        # Linha 1: Seleção de Planilha e Pasta Destino
         linha_arquivo = ttk.Frame(frame_configs, style="Card.TFrame")
-        linha_arquivo.pack(fill=tk.X, pady=(0, 6))
+        linha_arquivo.pack(fill=tk.X, pady=(0, 8))
 
         self.btn_selecionar = ttk.Button(
             linha_arquivo,
@@ -866,53 +1094,52 @@ class AppConsultaFrotaGUI:
 
         self.lbl_caminho = ttk.Label(
             linha_arquivo,
-            text="Nenhuma planilha selecionada",
+            text="Nenhuma planilha carregada",
             font=("Segoe UI", 9, "italic"),
             foreground="#64748B",
             style="Card.TLabel"
         )
         self.lbl_caminho.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # Linha 2: Filtros de Débito e Marcar Todos
+        # Linha 2: Motores de Consulta e Velocidade
         linha_filtros = ttk.Frame(frame_configs, style="Card.TFrame")
-        linha_filtros.pack(fill=tk.X, pady=(0, 6))
+        linha_filtros.pack(fill=tk.X, pady=(0, 8))
 
-        lbl_filtro_txt = ttk.Label(linha_filtros, text="Consultar:", font=("Segoe UI", 9, "bold"), style="Card.TLabel")
+        lbl_filtro_txt = ttk.Label(linha_filtros, text="Motores Ativos:", font=("Segoe UI", 9, "bold"), style="Card.TLabel")
         lbl_filtro_txt.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.chk_ipva = ttk.Checkbutton(linha_filtros, text="IPVA (Sefaz-CE)", variable=self.var_ipva, style="Card.TCheckbutton")
+        self.chk_ipva = ttk.Checkbutton(linha_filtros, text="🏛️ IPVA (Sefaz-CE)", variable=self.var_ipva, style="Card.TCheckbutton")
         self.chk_ipva.pack(side=tk.LEFT, padx=(0, 10))
 
-        self.chk_lic = ttk.Checkbutton(linha_lic := linha_filtros, text="Licenciamento (Detran-CE)", variable=self.var_lic, style="Card.TCheckbutton")
+        self.chk_lic = ttk.Checkbutton(linha_filtros, text="📋 Licenciamento (Detran-CE)", variable=self.var_lic, style="Card.TCheckbutton")
         self.chk_lic.pack(side=tk.LEFT, padx=(0, 10))
 
-        self.chk_multas = ttk.Checkbutton(linha_filtros, text="Multas (Detran-CE)", variable=self.var_multas, style="Card.TCheckbutton")
+        self.chk_multas = ttk.Checkbutton(linha_filtros, text="🚨 Multas (Detran-CE)", variable=self.var_multas, style="Card.TCheckbutton")
         self.chk_multas.pack(side=tk.LEFT, padx=(0, 12))
 
         self.btn_toggle_filtros = ttk.Button(
             linha_filtros,
-            text="☑️ Marcar/Desmarcar",
+            text="☑️ Marcar/Desmarcar Todos",
             style="Muted.TButton",
             command=self._alternar_todos_filtros
         )
-        self.btn_toggle_filtros.pack(side=tk.LEFT, padx=(0, 14))
+        self.btn_toggle_filtros.pack(side=tk.LEFT, padx=(0, 16))
 
-        # Seletor de Concorrência (Workers)
-        lbl_workers = ttk.Label(linha_filtros, text="Velocidade:", font=("Segoe UI", 9, "bold"), style="Card.TLabel")
-        lbl_workers.pack(side=tk.LEFT, padx=(0, 4))
+        lbl_workers = ttk.Label(linha_filtros, text="Velocidade / Concorrência:", font=("Segoe UI", 9, "bold"), style="Card.TLabel")
+        lbl_workers.pack(side=tk.LEFT, padx=(0, 6))
 
         self.combo_workers = ttk.Combobox(
             linha_filtros,
             values=["1x (Sequencial)", "2x Paralelo", "3x Paralelo", "4x Máximo"],
             state="readonly",
-            width=14
+            width=15
         )
         idx_w = max(0, min(self.var_workers.get() - 1, 3))
         self.combo_workers.current(idx_w)
         self.combo_workers.bind("<<ComboboxSelected>>", self._ao_mudar_workers)
         self.combo_workers.pack(side=tk.LEFT)
 
-        # Linha 3: Opções de Exportação, Headless e Botões Principais
+        # Linha 3: Exportação, Headless e Comandos Principais
         linha_opcoes = ttk.Frame(frame_configs, style="Card.TFrame")
         linha_opcoes.pack(fill=tk.X, pady=(0, 2))
 
@@ -944,13 +1171,13 @@ class AppConsultaFrotaGUI:
 
         self.chk_headless = ttk.Checkbutton(
             linha_opcoes,
-            text="Chrome Oculto",
+            text="Chrome Oculto (Headless)",
             variable=self.var_headless,
             style="Card.TCheckbutton"
         )
         self.chk_headless.pack(side=tk.LEFT)
 
-        # Botões Iniciar, Pausar e Cancelar à direita
+        # Botões de Execução
         self.btn_cancelar = ttk.Button(
             linha_opcoes,
             text="⏹️ Cancelar",
@@ -971,47 +1198,79 @@ class AppConsultaFrotaGUI:
 
         self.btn_iniciar = ttk.Button(
             linha_opcoes,
-            text="▶️ Iniciar Consulta",
+            text="⚡ INICIAR CONSULTA",
             style="Action.TButton",
             state="disabled",
             command=self._iniciar_processamento
         )
         self.btn_iniciar.pack(side=tk.RIGHT)
 
-        # 3. CARD: TABELA INTERATIVA EM TEMPO REAL E LOGS
-        frame_centro = ttk.LabelFrame(container, text=" Acompanhamento em Tempo Real ", style="Card.TLabelframe", padding="8 8 8 8")
+        # 3. ACOMPANHAMENTO EM TEMPO REAL: TABELA E CONSOLE SINTÁTICO
+        frame_centro = ttk.LabelFrame(container, text=" Central de Monitoramento e Auditoria ", style="Card.TLabelframe", padding="10 8 10 8")
         frame_centro.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
         self.notebook = ttk.Notebook(frame_centro)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        # Aba 1: Tabela Visual com Busca e Ordenação
+        # Aba 1: Tabela com Barra de Filtros em Pílulas
         aba_tabela = ttk.Frame(self.notebook, padding="4 4 4 4")
-        self.notebook.add(aba_tabela, text=" 📊 Tabela de Veículos ")
+        self.notebook.add(aba_tabela, text=" 📊 Tabela Dinâmica da Frota ")
 
-        # Barra de Busca na Tabela
-        frame_busca = ttk.Frame(aba_tabela)
-        frame_busca.pack(fill=tk.X, pady=(0, 6))
+        # Barra de Busca & Filtros por Pílulas
+        frame_filtros_bar = ttk.Frame(aba_tabela)
+        frame_filtros_bar.pack(fill=tk.X, pady=(0, 6))
 
-        ttk.Label(frame_busca, text="🔍 Buscar na Tabela:", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
-        self.entry_busca = ttk.Entry(frame_busca, textvariable=self.var_busca, width=28)
+        ttk.Label(frame_filtros_bar, text="🔍 Busca:", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 4))
+        self.entry_busca = ttk.Entry(frame_filtros_bar, textvariable=self.var_busca, width=22)
         self.entry_busca.pack(side=tk.LEFT, padx=(0, 6))
         self.var_busca.trace_add("write", lambda *_: self._filtrar_tabela())
 
-        ttk.Button(frame_busca, text="✖ Limpar Busca", style="Muted.TButton", command=lambda: self.var_busca.set("")).pack(side=tk.LEFT)
+        ttk.Button(frame_filtros_bar, text="✖ Limpar", style="Muted.TButton", command=lambda: self.var_busca.set("")).pack(side=tk.LEFT, padx=(0, 14))
 
+        # Pílulas Rápidas de Filtro
+        self.botoes_filtro["TODOS"] = ttk.Button(
+            frame_filtros_bar, text="✦ Todos (0)", style="ActiveFilter.TButton",
+            command=lambda: self._definir_filtro_pílula("TODOS")
+        )
+        self.botoes_filtro["TODOS"].pack(side=tk.LEFT, padx=(0, 4))
+
+        self.botoes_filtro["DEBITOS"] = ttk.Button(
+            frame_filtros_bar, text="⚠️ Com Débitos (0)", style="Muted.TButton",
+            command=lambda: self._definir_filtro_pílula("DEBITOS")
+        )
+        self.botoes_filtro["DEBITOS"].pack(side=tk.LEFT, padx=(0, 4))
+
+        self.botoes_filtro["PAGOS"] = ttk.Button(
+            frame_filtros_bar, text="✅ Pagos / Sem Débito (0)", style="Muted.TButton",
+            command=lambda: self._definir_filtro_pílula("PAGOS")
+        )
+        self.botoes_filtro["PAGOS"].pack(side=tk.LEFT, padx=(0, 4))
+
+        self.botoes_filtro["RESTRICAO"] = ttk.Button(
+            frame_filtros_bar, text="🚨 Restrições (0)", style="Muted.TButton",
+            command=lambda: self._definir_filtro_pílula("RESTRICAO")
+        )
+        self.botoes_filtro["RESTRICAO"].pack(side=tk.LEFT, padx=(0, 4))
+
+        self.botoes_filtro["FALHAS"] = ttk.Button(
+            frame_filtros_bar, text="❌ Falhas (0)", style="Muted.TButton",
+            command=lambda: self._definir_filtro_pílula("FALHAS")
+        )
+        self.botoes_filtro["FALHAS"].pack(side=tk.LEFT)
+
+        # Treeview com Colunas Alinhadas
         colunas = ("num", "placa", "renavam", "licenciamento", "ipva", "multas", "total_pagar", "situacao")
         self.tree = ttk.Treeview(aba_tabela, columns=colunas, show="headings", selectmode="extended")
 
         cabecalhos_nomes = [
-            ("num", "Item", 45, "center"),
-            ("placa", "Placa", 85, "center"),
-            ("renavam", "RENAVAM", 115, "center"),
-            ("licenciamento", "Licenciamento", 125, "e"),
-            ("ipva", "IPVA", 125, "e"),
-            ("multas", "Multas", 125, "e"),
-            ("total_pagar", "Total a Pagar", 125, "e"),
-            ("situacao", "Situação", 135, "center"),
+            ("num", "#", 45, "center"),
+            ("placa", "Placa", 95, "center"),
+            ("renavam", "RENAVAM", 125, "center"),
+            ("licenciamento", "Licenciamento", 130, "e"),
+            ("ipva", "IPVA", 130, "e"),
+            ("multas", "Multas", 130, "e"),
+            ("total_pagar", "Total a Pagar", 135, "e"),
+            ("situacao", "Situação Auditada", 150, "center"),
         ]
 
         for col_id, titulo, larg, alinhamento in cabecalhos_nomes:
@@ -1022,7 +1281,7 @@ class AppConsultaFrotaGUI:
         scroll_x = ttk.Scrollbar(aba_tabela, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
 
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
         scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -1031,57 +1290,62 @@ class AppConsultaFrotaGUI:
         self.menu_contexto.add_command(label="🔄 Reconsultar Veículo Selecionado", command=self._reconsultar_selecionado)
         self.tree.bind("<Button-3>", self._exibir_menu_contexto)
 
-        # Aba 2: Console de Logs
+        # Aba 2: Console de Logs com Destaque Sintático
         aba_logs = ttk.Frame(self.notebook, padding="4 4 4 4")
-        self.notebook.add(aba_logs, text=" 📜 Logs do Sistema ")
+        self.notebook.add(aba_logs, text=" 📜 Terminal Executivo de Logs ")
 
-        self.txt_logs = tk.Text(aba_logs, wrap=tk.WORD, font=("Consolas", 8), relief=tk.FLAT)
+        self.txt_logs = tk.Text(aba_logs, wrap=tk.WORD, font=("Consolas", 9), relief=tk.FLAT, padx=10, pady=10)
         scroll_logs = ttk.Scrollbar(aba_logs, orient="vertical", command=self.txt_logs.yview)
         self.txt_logs.configure(yscrollcommand=scroll_logs.set)
         self.txt_logs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll_logs.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # 4. CARD: DASHBOARD DE MÉTRICAS CONSOLIDADAS
+        # 4. DASHBOARD DE MÉTRICAS ORNAMENTADO (LUXURY CANVAS CARDS)
         frame_metricas = ttk.Frame(container)
         frame_metricas.pack(fill=tk.X, pady=(0, 8))
 
-        def criar_card(pai, titulo, var_val, cor_l, cor_d):
-            card = tk.Frame(pai, bg="#FFFFFF", relief=tk.SOLID, bd=1, highlightthickness=1)
-            card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=3)
-            lbl_t = tk.Label(card, text=titulo, font=("Segoe UI", 8, "bold"), fg="#64748B", bg="#FFFFFF")
-            lbl_t.pack(pady=(4, 1))
-            lbl_v = tk.Label(card, textvariable=var_val, font=("Segoe UI", 11, "bold"), fg=cor_l, bg="#FFFFFF")
-            lbl_v.pack(pady=(0, 4))
-            self.cards_metricas.append((card, lbl_t, lbl_v, cor_l, cor_d))
-            return card
+        self.luxury_cards.clear()
+        card_configs = [
+            ("FROTA TOTAL", self.var_metricas_veiculos, "🚘", "#3B82F6", "✦ Registros Válidos"),
+            ("LICENCIAMENTO", self.var_metricas_lic, "📋", "#F59E0B", "✦ Detran-CE"),
+            ("IPVA EM ABERTO", self.var_metricas_ipva, "🏛️", "#F43F5E", "✦ Sefaz-CE"),
+            ("MULTAS DETRAN", self.var_metricas_multas, "🚨", "#EA580C", "✦ Infrações Ativas"),
+            ("TOTAL CONSOLIDADO", self.var_metricas_total, "💎", "#10B981", "✦ Saldo Total a Liquidar"),
+        ]
 
-        criar_card(frame_metricas, "VEÍCULOS", self.var_metricas_veiculos, "#1E3A8A", "#9BB3D6")
-        criar_card(frame_metricas, "LICENCIAMENTO", self.var_metricas_lic, "#B45309", "#D8B983")
-        criar_card(frame_metricas, "IPVA EM ABERTO", self.var_metricas_ipva, "#B91C1C", "#DDA0A8")
-        criar_card(frame_metricas, "MULTAS DETRAN", self.var_metricas_multas, "#7C2D12", "#DBA392")
-        criar_card(frame_metricas, "TOTAL A PAGAR", self.var_metricas_total, "#15803D", "#90BE9F")
+        for titulo, var_val, icone, cor_acento, sub in card_configs:
+            c = LuxuryMetricCard(
+                frame_metricas,
+                titulo=titulo,
+                var_valor=var_val,
+                icone=icone,
+                cor_acento=cor_acento,
+                subtexto=sub,
+                modo_noturno=self.modo_noturno
+            )
+            c.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
+            self.luxury_cards.append(c)
 
-        # 5. BARRA DE PROGRESSO E AÇÕES PÓS-PROCESSAMENTO
+        # 5. BARRA DE PROGRESSO & PAINEL DE AÇÕES EXECUTIVAS
         frame_rodape = ttk.Frame(container)
         frame_rodape.pack(fill=tk.X)
 
         self.lbl_status = ttk.Label(
             frame_rodape,
             textvariable=self.var_status,
-            font=("Segoe UI", 9, "bold"),
-            foreground="#1A365D"
+            font=("Segoe UI", 9, "bold")
         )
-        self.lbl_status.pack(anchor="w", pady=(0, 3))
+        self.lbl_status.pack(anchor="w", pady=(0, 4))
 
         self.barra_progresso = ttk.Progressbar(frame_rodape, mode="determinate")
-        self.barra_progresso.pack(fill=tk.X, pady=(0, 6))
+        self.barra_progresso.pack(fill=tk.X, pady=(0, 8))
 
         frame_botoes_finais = ttk.Frame(frame_rodape)
         frame_botoes_finais.pack(fill=tk.X)
 
         self.btn_abrir_excel = ttk.Button(
             frame_botoes_finais,
-            text="📊 Abrir Excel",
+            text="📊 Relatório Excel",
             style="Secondary.TButton",
             state="disabled",
             command=self._abrir_excel_gerado
@@ -1090,7 +1354,7 @@ class AppConsultaFrotaGUI:
 
         self.btn_abrir_pdf = ttk.Button(
             frame_botoes_finais,
-            text="📄 Abrir PDF",
+            text="📄 Relatório PDF",
             style="Secondary.TButton",
             state="disabled",
             command=self._abrir_pdf_gerado
@@ -1115,10 +1379,10 @@ class AppConsultaFrotaGUI:
         )
         self.btn_reconsultar_falhas.pack(side=tk.LEFT, padx=(0, 10))
 
-        # BOTÃO EXCLUSIVO DE DOWNLOAD DE BOLETOS (Habilitado apenas pós-consulta com débitos)
+        # BOTÃO GLAMOUROSO DE DOWNLOAD DE BOLETOS
         self.btn_baixar_boletos = ttk.Button(
             frame_botoes_finais,
-            text="📥 Baixar Boletos (Licenciamento e IPVA)",
+            text="📥 CENTRAL DE DOWNLOAD DE BOLETOS (PDF)",
             style="Action.TButton",
             state="disabled",
             command=self._abrir_central_download_boletos
@@ -1140,18 +1404,75 @@ class AppConsultaFrotaGUI:
         if self.is_pausado:
             self.btn_pausar.config(text="▶️ Continuar")
             self.var_status.set("Consulta pausada temporariamente pelo usuário.")
-            self._adicionar_log("Processamento pausado.")
+            self._adicionar_log("Processamento pausado.", nivel="ALERTA")
+            if self.status_orb:
+                self.status_orb.definir_status("pausado", "PROCESSAMENTO PAUSADO")
         else:
             self.btn_pausar.config(text="⏸️ Pausar")
             self.var_status.set("Retomando consultas de onde parou...")
-            self._adicionar_log("Processamento retomado.")
+            self._adicionar_log("Processamento retomado.", nivel="INFO")
+            if self.status_orb:
+                self.status_orb.definir_status("processando", "RETOMANDO CONSULTAS...")
 
-    def _adicionar_log(self, mensagem: str):
-        logger.info(mensagem)
+    def _adicionar_log(self, mensagem: str, nivel: str = "INFO"):
+        """Exibe logs com realce sintático de cores e marcas de tempo."""
+        logger.info(f"[{nivel}] {mensagem}")
         hora = datetime.now().strftime("%H:%M:%S")
-        linha = f"[{hora}] {mensagem}\n"
-        self.txt_logs.insert(tk.END, linha)
+
+        tag_nivel = "tag_info"
+        if "SUCESSO" in nivel.upper() or "PAGO" in mensagem.upper():
+            tag_nivel = "tag_sucesso"
+        elif "ALERTA" in nivel.upper() or "AVISO" in nivel.upper() or "FALHA" in mensagem.upper():
+            tag_nivel = "tag_alerta"
+        elif "ERRO" in nivel.upper():
+            tag_nivel = "tag_erro"
+
+        self.txt_logs.insert(tk.END, f"[{hora}] ", ("tag_time",))
+        self.txt_logs.insert(tk.END, f"[{nivel}] ", (tag_nivel,))
+        self.txt_logs.insert(tk.END, f"{mensagem}\n", ("tag_corpo",))
         self.txt_logs.see(tk.END)
+
+    def _definir_filtro_pílula(self, tipo: str):
+        self.filtro_ativo = tipo
+        for k, btn in self.botoes_filtro.items():
+            btn.configure(style="ActiveFilter.TButton" if k == tipo else "Muted.TButton")
+        self._filtrar_tabela()
+
+    def _atualizar_contadores_filtro(self):
+        if self.df_carregado is None:
+            return
+
+        total = len(self.df_carregado)
+        debitos = 0
+        pagos = 0
+        restricoes = 0
+        falhas = len(self.indices_em_falha)
+
+        for idx, dados in self.resultados_memoria.items():
+            lic = dados.get("lic", "-")
+            ipva = dados.get("ipva", "-")
+            multas = dados.get("multas", "-")
+            m_av = dados.get("multas_a_vencer")
+            tem_falha = any("falha" in str(v).lower() or "erro" in str(v).lower() for v in [lic, ipva, multas])
+            if tem_falha:
+                continue
+
+            tot = calcular_total_a_pagar_veiculo(lic, ipva, multas, m_av)
+            is_restr = "restriç" in str(lic).lower() or "restric" in str(lic).lower()
+            is_pago = (str(lic).strip().upper() == "PAGO" or str(ipva).strip().upper() == "PAGO")
+
+            if is_restr:
+                restricoes += 1
+            if tot > 0:
+                debitos += 1
+            elif is_pago or tot == 0:
+                pagos += 1
+
+        self.botoes_filtro["TODOS"].configure(text=f"✦ Todos ({total})")
+        self.botoes_filtro["DEBITOS"].configure(text=f"⚠️ Com Débitos ({debitos})")
+        self.botoes_filtro["PAGOS"].configure(text=f"✅ Pagos ({pagos})")
+        self.botoes_filtro["RESTRICAO"].configure(text=f"🚨 Restrições ({restricoes})")
+        self.botoes_filtro["FALHAS"].configure(text=f"❌ Falhas ({falhas})")
 
     def _exibir_menu_contexto(self, event):
         item_selecionado = self.tree.identify_row(event.y)
@@ -1235,16 +1556,21 @@ class AppConsultaFrotaGUI:
                 tag = "falha"
                 self.indices_em_falha.append(idx)
 
+            zebra = "row_even" if idx % 2 == 0 else "row_odd"
             self.tree.insert(
                 "",
                 "end",
                 iid=str(idx),
                 values=(idx + 1, placa, renavam, "-", "-", "-", "-", "Aguardando"),
-                tags=(tag,)
+                tags=(zebra, tag)
             )
 
+        self._atualizar_contadores_filtro()
+        if self.status_orb:
+            self.status_orb.definir_status("pronto", f"{len(self.df_carregado)} VEÍCULOS PRONTOS")
+
     def _filtrar_tabela(self):
-        """Filtra as linhas visíveis na Treeview em tempo real conforme a busca."""
+        """Filtra as linhas visíveis na Treeview combinando busca textual e pílula ativa."""
         termo = self.var_busca.get().strip().upper()
         if self.df_carregado is None:
             return
@@ -1256,7 +1582,10 @@ class AppConsultaFrotaGUI:
             dados_mem = self.resultados_memoria.get(idx, {})
 
             situacao = "Aguardando"
-            total_str = "-"
+            total_real = 0.0
+            tag_linha = "pendente"
+            tem_falha = idx in self.indices_em_falha
+
             if idx in self.resultados_memoria:
                 lic = dados_mem.get("lic", "-")
                 ipva = dados_mem.get("ipva", "-")
@@ -1264,12 +1593,13 @@ class AppConsultaFrotaGUI:
                 m_av = dados_mem.get("multas_a_vencer")
                 tem_falha = any("falha" in str(v).lower() or "erro" in str(v).lower() for v in [lic, ipva, multas])
                 total_real = calcular_total_a_pagar_veiculo(lic, ipva, multas, m_av)
-                total_str = formatar_float_moeda(total_real)
-                tag_linha = "pendente"
+                is_restr = "restriç" in str(lic).lower() or "restric" in str(lic).lower()
+                is_pago = (str(lic).strip().upper() == "PAGO" or str(ipva).strip().upper() == "PAGO")
+
                 if tem_falha:
                     situacao = "Falha na Consulta"
                     tag_linha = "falha"
-                elif "restriç" in str(lic).lower() or "restric" in str(lic).lower():
+                elif is_restr:
                     situacao = "Com Débitos / Restrição" if total_real > 0 else "Restrição"
                     tag_linha = "restricao"
                 elif total_real > 0:
@@ -1277,22 +1607,37 @@ class AppConsultaFrotaGUI:
                     tag_linha = "com_debito"
                 else:
                     situacao = "Sem Débitos"
-                    tag_linha = "pago" if str(lic).strip().upper() == "PAGO" else "sem_debito"
+                    tag_linha = "pago" if is_pago else "sem_debito"
 
-            corresponde = (not termo) or (termo in placa) or (termo in renavam) or (termo in situacao.upper())
+            # 1. Filtro de Busca Textual
+            passa_termo = (not termo) or (termo in placa) or (termo in renavam) or (termo in situacao.upper())
+
+            # 2. Filtro de Pílula
+            passa_pilula = True
+            if self.filtro_ativo == "DEBITOS":
+                passa_pilula = (total_real > 0 and not tem_falha)
+            elif self.filtro_ativo == "PAGOS":
+                passa_pilula = (tag_linha in ["pago", "sem_debito"] and not tem_falha)
+            elif self.filtro_ativo == "RESTRICAO":
+                passa_pilula = (tag_linha == "restricao")
+            elif self.filtro_ativo == "FALHAS":
+                passa_pilula = tem_falha
+
+            corresponde = passa_termo and passa_pilula
 
             if corresponde:
                 if not self.tree.exists(str(idx)):
-                    # Reinsere o item
+                    total_str = formatar_float_moeda(total_real) if idx in self.resultados_memoria else "-"
                     lic_v = dados_mem.get("lic", "-")
                     ipva_v = dados_mem.get("ipva", "-")
                     multas_v = dados_mem.get("multas", "-")
+                    zebra = "row_even" if idx % 2 == 0 else "row_odd"
                     self.tree.insert(
                         "",
                         "end",
                         iid=str(idx),
                         values=(idx + 1, placa, renavam, lic_v, ipva_v, multas_v, total_str, situacao),
-                        tags=(tag_linha,)
+                        tags=(zebra, tag_linha)
                     )
             else:
                 if self.tree.exists(str(idx)):
@@ -1377,6 +1722,9 @@ class AppConsultaFrotaGUI:
         self.btn_abrir_pasta.config(state="disabled")
         self.barra_progresso["value"] = 0
 
+        if self.status_orb:
+            self.status_orb.definir_status("processando", "INICIANDO CONSULTA...")
+
         self.notebook.select(0)
 
         thread = threading.Thread(
@@ -1393,6 +1741,8 @@ class AppConsultaFrotaGUI:
             self.btn_cancelar.config(state="disabled")
             self.btn_pausar.config(state="disabled")
             self._adicionar_log("Solicitação de cancelamento registrada.")
+            if self.status_orb:
+                self.status_orb.definir_status("pausado", "CANCELAMENTO SOLICITADO")
 
     def _salvar_checkpoint(self, pasta_destino: str, df: pd.DataFrame):
         try:
@@ -1472,6 +1822,8 @@ class AppConsultaFrotaGUI:
                                 placa, renavam, consultar_lic, consultar_multas
                             )
                             val_detran_lic = res_detran[0]
+                            if str(val_detran_lic).strip() in ["R$ 0,00", "0,00"]:
+                                val_detran_lic = "PAGO"
                             val_detran_multas = res_detran[1]
                             multas_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
                             multas_vencidas = getattr(res_detran, "multas_vencidas", "R$ 0,00")
@@ -1479,6 +1831,8 @@ class AppConsultaFrotaGUI:
 
                         if consultar_ipva:
                             val_sefaz_ipva = scraper.consultar_sefaz_ipva(placa, renavam)
+                            if str(val_sefaz_ipva).strip() in ["R$ 0,00", "0,00"]:
+                                val_sefaz_ipva = "PAGO"
                             time.sleep(0.3)
 
                         with lock_memoria:
@@ -1643,11 +1997,16 @@ class AppConsultaFrotaGUI:
         soma_multas: float,
         total_acumulado: float
     ):
+        if str(lic).strip() in ["R$ 0,00", "0,00"]:
+            lic = "PAGO"
+        if str(ipva).strip() in ["R$ 0,00", "0,00"]:
+            ipva = "PAGO"
+
         total_veiculo = calcular_total_a_pagar_veiculo(lic, ipva, multas, multas_a_vencer)
         total_veiculo_str = formatar_float_moeda(total_veiculo)
         tem_falha = any("falha" in str(v).lower() or "erro" in str(v).lower() for v in [lic, ipva, multas])
         is_restricao = "restriç" in str(lic).lower() or "restric" in str(lic).lower()
-        is_pago = str(lic).strip().upper() == "PAGO"
+        is_pago = (str(lic).strip().upper() == "PAGO" or str(ipva).strip().upper() == "PAGO")
 
         if tem_falha:
             situacao = "Falha na Consulta"
@@ -1677,11 +2036,12 @@ class AppConsultaFrotaGUI:
         placa = str(row[self.col_placa]).strip().upper()
         renavam = str(row[self.col_renavam]).strip()
 
+        zebra = "row_even" if index % 2 == 0 else "row_odd"
         if self.tree.exists(str(index)):
             self.tree.item(
                 str(index),
                 values=(index + 1, placa, renavam, lic, ipva, multas, total_veiculo_str, situacao),
-                tags=(tag,)
+                tags=(zebra, tag)
             )
 
         self.var_metricas_veiculos.set(f"{qtd_concluidos} / {total_geral}")
@@ -1689,6 +2049,10 @@ class AppConsultaFrotaGUI:
         self.var_metricas_ipva.set(formatar_float_moeda(soma_ipva))
         self.var_metricas_multas.set(formatar_float_moeda(soma_multas))
         self.var_metricas_total.set(formatar_float_moeda(total_acumulado))
+
+        self._atualizar_contadores_filtro()
+        if self.status_orb:
+            self.status_orb.definir_status("processando", f"AUDITANDO: #{index + 1} / {total_geral}")
 
     def _finalizar_processamento_ui(self, arq_excel: str, arq_pdf: str, foi_cancelado: bool):
         self.barra_progresso["value"] = 100
@@ -1722,6 +2086,12 @@ class AppConsultaFrotaGUI:
                 winsound.MessageBeep(winsound.MB_ICONASTERISK)
             except Exception:
                 pass
+
+        if self.status_orb:
+            if foi_cancelado:
+                self.status_orb.definir_status("pausado", "INTERROMPIDO")
+            else:
+                self.status_orb.definir_status("pronto", "AUDITORIA CONCLUÍDA")
 
         if foi_cancelado:
             self.var_status.set("Processamento interrompido. Resultados parciais salvos.")

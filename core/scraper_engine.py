@@ -234,12 +234,15 @@ class FrotaScraperEngine:
                         elif any(t in modal_txt for t in ["já licenciado", "ja licenciado", "sem débitos", "sem debitos"]):
                             val_lic = "PAGO"
                         else:
-                            # Aguarda linha TOTAL da tabela do modal
                             el_total_lic = wait_modal.until(EC.visibility_of_element_located((
                                 By.XPATH, "//*[@id='outros-servicos-modal']//tr[contains(., 'TOTAL')]/td[last()]"
                             )))
                             texto_lic = el_total_lic.text.strip()
-                            val_lic = texto_lic if texto_lic else "R$ 0,00"
+                            from core.data_processor import formatar_moeda_float
+                            if not texto_lic or formatar_moeda_float(texto_lic) == 0.0 or texto_lic == "R$ 0,00":
+                                val_lic = "PAGO"
+                            else:
+                                val_lic = texto_lic
 
                         # Captura possíveis AITs das multas vencidas embutidas no licenciamento
                         import re
@@ -423,15 +426,18 @@ class FrotaScraperEngine:
             if self.driver.find_elements(By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'Não há registro')]"):
                 return "Não Localizado"
 
-            # Se não há tabela de não quitados, encerra como R$ 0,00 imediatamente
+            # Se não há tabela de não quitados, encerra como PAGO imediatamente
             if not self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Débitos de IPVA não quitados')]"):
-                return "R$ 0,00"
+                return "PAGO"
 
             # 5. Extrai saldo em aberto
             xpath_valor = "//td[contains(., 'Em aberto')]/preceding-sibling::td[contains(., 'R$')][1]"
             el_valor = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_valor)))
             txt_ipva = el_valor.text.strip()
-            return txt_ipva if txt_ipva else "R$ 0,00"
+            from core.data_processor import formatar_moeda_float
+            if not txt_ipva or formatar_moeda_float(txt_ipva) == 0.0 or txt_ipva == "R$ 0,00":
+                return "PAGO"
+            return txt_ipva
 
         except (WebDriverException, Exception) as e:
             logger.warning(f"Erro ao consultar Sefaz para {placa} (Tentativa {tentativa_atual}): {e}")

@@ -267,6 +267,10 @@ class TestCore(unittest.TestCase):
         self.assertEqual(df_out.loc[0, "Status"], "Com Débitos / Restrição")
         self.assertEqual(df_out.loc[1, "Status"], "Com Débitos Pendentes")
         self.assertEqual(df_out.loc[2, "Status"], "Restrição de Impedimento")
+        # IPVA com valor R$ 0,00 registrado como 'PAGO'
+        self.assertEqual(df_out.loc[0, "Valor_IPVA"], "PAGO")
+        self.assertEqual(df_out.loc[1, "Valor_IPVA"], "R$ 594,06")
+        self.assertEqual(df_out.loc[2, "Valor_IPVA"], "PAGO")
 
         # 4. Estilos no Excel para PAGO (verde) e Restrição (laranja)
         excel_path = os.path.join(self.temp_dir, "teste_estilos_especiais.xlsx")
@@ -281,6 +285,13 @@ class TestCore(unittest.TestCase):
         self.assertEqual(c_restr.fill.start_color.rgb, "00FFEDD5")
         self.assertEqual(c_restr.font.color.rgb, "009A3412")
         self.assertTrue(c_restr.font.bold)
+
+        # Linha 2 é POT5I85 - coluna D (Valor_IPVA) deve ser PAGO (verde)
+        c_ipva_pago = ws["D2"]
+        self.assertEqual(c_ipva_pago.value, "PAGO")
+        self.assertEqual(c_ipva_pago.fill.start_color.rgb, "00DCFCE7")
+        self.assertEqual(c_ipva_pago.font.color.rgb, "00166534")
+        self.assertTrue(c_ipva_pago.font.bold)
 
         # Linha 3 é THY7G95 (PAGO) - coluna C (Valor_Licenciamento)
         c_pago = ws["C3"]
