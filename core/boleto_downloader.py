@@ -6,6 +6,7 @@ Salva e renomeia os boletos no padrão corporativo:
 Suporta captura por download direto e renderização via 'Salvar como PDF' (Chrome CDP).
 """
 import os
+import re
 import sys
 import time
 import base64
@@ -31,13 +32,18 @@ logger = obter_logger("BoletoDownloader")
 class FrotaBoletoDownloader:
     """Realiza o download em lote e renomeação de boletos de Licenciamento e IPVA."""
 
-    def __init__(self, pasta_base_destino: str, headless: bool = True):
+    def __init__(self, pasta_base_destino: str, headless: bool = True, nome_frota: str = ""):
         self.pasta_base_destino = pasta_base_destino
         self.headless = headless
+        self.nome_frota = nome_frota.strip()
         self.data_hoje_str = datetime.now().strftime("%d-%m-%Y")
         
-        # Nome da pasta: "Licenciamento-IPVA DD-MM-AAAA" (sem barras para compatibilidade total com o Windows)
-        self.nome_pasta_boletos = f"Licenciamento-IPVA ({self.data_hoje_str})"
+        # Nome da pasta: inclui identificação da frota se fornecida para evitar colisão entre frotas
+        if self.nome_frota:
+            identificador_limpo = re.sub(r'[\\/*?:"<>|]', "", self.nome_frota).strip()
+            self.nome_pasta_boletos = f"Licenciamento-IPVA ({identificador_limpo} - {self.data_hoje_str})"
+        else:
+            self.nome_pasta_boletos = f"Licenciamento-IPVA ({self.data_hoje_str})"
         self.pasta_destino_final = os.path.join(self.pasta_base_destino, self.nome_pasta_boletos)
         
         self.pasta_temp_downloads = os.path.join(self.pasta_destino_final, ".temp_downloads")

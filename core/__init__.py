@@ -11,7 +11,9 @@ from core.data_processor import (
     obter_estilo_financeiro,
     obter_ultimo_dia_util_mes,
     obter_proximo_dia_util,
-    PADRAO_PLACA
+    PADRAO_PLACA,
+    gerar_nome_base_resultado,
+    obter_caminhos_arquivos_saida
 )
 from core.scraper_engine import FrotaScraperEngine
 from core.boleto_downloader import FrotaBoletoDownloader
@@ -28,6 +30,8 @@ __all__ = [
     "obter_ultimo_dia_util_mes",
     "obter_proximo_dia_util",
     "PADRAO_PLACA",
+    "gerar_nome_base_resultado",
+    "obter_caminhos_arquivos_saida",
     "FrotaScraperEngine",
     "FrotaBoletoDownloader",
     "FrotaRelatorioExporter"

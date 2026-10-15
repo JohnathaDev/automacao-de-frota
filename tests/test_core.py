@@ -16,7 +16,9 @@ from core.data_processor import (
     obter_estilo_financeiro,
     obter_ultimo_dia_util_mes,
     obter_proximo_dia_util,
-    PADRAO_PLACA
+    PADRAO_PLACA,
+    gerar_nome_base_resultado,
+    obter_caminhos_arquivos_saida
 )
 from core.scraper_engine import DetranResultado
 from core.relatorio_exporter import FrotaRelatorioExporter
@@ -299,6 +301,51 @@ class TestCore(unittest.TestCase):
         self.assertEqual(c_pago.fill.start_color.rgb, "00DCFCE7")
         self.assertEqual(c_pago.font.color.rgb, "00166534")
         self.assertTrue(c_pago.font.bold)
+
+    def test_nomenclatura_dinamica_arquivos(self):
+        # 1. Casos solicitados pelo usuário
+        self.assertEqual(gerar_nome_base_resultado("frota_final_8.xlsx"), "resultados_final_8")
+        self.assertEqual(gerar_nome_base_resultado("frota_final_8"), "resultados_final_8")
+        self.assertEqual(gerar_nome_base_resultado("frota_ferreira_gomes.xlsx"), "resultados_ferreira_gomes")
+        self.assertEqual(gerar_nome_base_resultado("frota_ferreira_gomes"), "resultados_ferreira_gomes")
+
+        # 2. Variações com hífen e espaço
+        self.assertEqual(gerar_nome_base_resultado("frota-final-8.xlsx"), "resultados-final-8")
+        self.assertEqual(gerar_nome_base_resultado("frota final 8.xlsx"), "resultados final 8")
+        self.assertEqual(gerar_nome_base_resultado("frota_ce.xlsx"), "resultados_ce")
+
+        # 3. Nomes sem prefixo frota ou somente frota
+        self.assertEqual(gerar_nome_base_resultado("frota.xlsx"), "resultados_frota")
+        self.assertEqual(gerar_nome_base_resultado("ferreira_gomes.xlsx"), "resultados_ferreira_gomes")
+        self.assertEqual(gerar_nome_base_resultado("final_8.xlsx"), "resultados_final_8")
+        self.assertEqual(gerar_nome_base_resultado("resultados_final_8.xlsx"), "resultados_final_8")
+        self.assertEqual(gerar_nome_base_resultado(""), "resultados_frota")
+
+        # 4. Geração de caminhos completos (Excel, PDF, Checkpoint)
+        excel, pdf, chk = obter_caminhos_arquivos_saida(
+            "C:/frotas/frota_final_8.xlsx",
+            pasta_destino=self.temp_dir
+        )
+        self.assertEqual(os.path.basename(excel), "resultados_final_8.xlsx")
+        self.assertEqual(os.path.basename(pdf), "resultados_final_8.pdf")
+        self.assertEqual(os.path.basename(chk), "~checkpoint_resultados_final_8.xlsx")
+        self.assertEqual(os.path.dirname(excel), self.temp_dir)
+
+        # 5. Exportação real de relatório com nome dinâmico
+        df = pd.DataFrame([{"Placa": "AAA1111", "RENAVAM": "01234567890", "Total_a_Pagar": "R$ 100,00"}])
+        c_excel = FrotaRelatorioExporter.exportar_excel(df, excel)
+        self.assertTrue(os.path.exists(c_excel))
+        self.assertEqual(c_excel, excel)
+
+        totais = {"lic": "R$ 0,00", "ipva": "R$ 0,00", "multas": "R$ 0,00", "total": "R$ 100,00"}
+        c_pdf = FrotaRelatorioExporter.exportar_pdf(df, pdf, totais, ["Licenciamento"], identificador_frota="final_8")
+        self.assertTrue(os.path.exists(c_pdf))
+        self.assertEqual(c_pdf, pdf)
+
+        # 6. Downloader de Boletos com separação por frota
+        dl = FrotaBoletoDownloader(self.temp_dir, headless=True, nome_frota="final_8")
+        self.assertIn("final_8", dl.nome_pasta_boletos)
+        self.assertIn("Licenciamento-IPVA", dl.nome_pasta_boletos)
 
 
 if __name__ == "__main__":

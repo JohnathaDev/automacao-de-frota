@@ -212,7 +212,8 @@ class FrotaRelatorioExporter:
         df: pd.DataFrame,
         caminho_arquivo: str,
         totais: dict,
-        filtros_ativos: list[str]
+        filtros_ativos: list[str],
+        identificador_frota: str = ""
     ) -> str:
         """
         Gera relatório executivo em PDF no formato Paisagem (A4) com ReportLab.
@@ -254,10 +255,10 @@ class FrotaRelatorioExporter:
 
         elementos = []
         elementos.append(Paragraph("RELATÓRIO CONSOLIDADO DE DÉBITOS VEICULARES", estilo_titulo))
-        elementos.append(Paragraph(
-            f"Portais Consultados: Detran-CE & Sefaz-CE | Filtros Ativos: {', '.join(filtros_ativos)} | Total de Veículos: {len(df)}",
-            estilo_sub
-        ))
+        sub_texto = f"Portais Consultados: Detran-CE & Sefaz-CE | Filtros Ativos: {', '.join(filtros_ativos)} | Total de Veículos: {len(df)}"
+        if identificador_frota:
+            sub_texto += f" | Frota: {identificador_frota}"
+        elementos.append(Paragraph(sub_texto, estilo_sub))
 
         # CARDS DE TOTAIS
         dados_cards = [[

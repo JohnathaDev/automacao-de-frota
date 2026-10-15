@@ -11,6 +11,7 @@ Boletos (Licenciamento e IPVA).
 """
 
 import os
+import re
 import sys
 import time
 import threading
@@ -30,7 +31,9 @@ from core.data_processor import (
     obter_estilo_financeiro,
     obter_ultimo_dia_util_mes,
     obter_proximo_dia_util,
-    PADRAO_PLACA
+    PADRAO_PLACA,
+    gerar_nome_base_resultado,
+    obter_caminhos_arquivos_saida
 )
 from core.scraper_engine import FrotaScraperEngine
 from core.boleto_downloader import FrotaBoletoDownloader
@@ -56,6 +59,23 @@ def ocultar_console():
                 ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE = 0
         except Exception:
             pass
+
+
+def configurar_dpi():
+    """
+    Habilita suporte a High-DPI no Windows para evitar distorções,
+    desfoque e incompatibilidades de resolução entre diferentes monitores.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)
+            except Exception:
+                ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 
 
 # ======================================================================================
@@ -114,7 +134,7 @@ class LuxuryMetricCard(tk.Canvas):
         subtexto: str = "✦ Tempo real",
         modo_noturno: bool = False
     ):
-        super().__init__(parent, highlightthickness=0, height=88)
+        super().__init__(parent, highlightthickness=0, height=76, width=100)
         self.titulo = titulo
         self.var_valor = var_valor
         self.icone = icone
@@ -175,45 +195,46 @@ class LuxuryMetricCard(tk.Canvas):
             return
 
         self.delete("all")
-        x1, y1, x2, y2 = 4, 4, w - 5, h - 5
+        x1, y1, x2, y2 = 4, 3, w - 5, h - 4
         cor_borda = self.border_glow if self.is_hover else self.border_normal
         largura_borda = 2 if self.is_hover else 1
 
         # 1. Fundo com cantos arredondados
         desenhar_retangulo_arredondado(
-            self, x1, y1, x2, y2, radius=12,
+            self, x1, y1, x2, y2, radius=10,
             fill=self.bg_card, outline=cor_borda, width=largura_borda
         )
 
         # 2. Barra de Acento Superior Refinada
         self.create_rectangle(
-            x1 + 18, y1 + 1, x2 - 18, y1 + 3,
+            x1 + 16, y1 + 1, x2 - 16, y1 + 3,
             fill=self.cor_acento, outline=""
         )
 
         # 3. Ícone e Título Superior
         self.create_text(
-            x1 + 14, y1 + 19,
+            x1 + 12, y1 + 16,
             text=f"{self.icone}  {self.titulo}",
             anchor="w",
             fill=self.fg_title,
             font=("Segoe UI", 8, "bold")
         )
 
-        # 4. Valor Formatado
+        # 4. Valor Formatado (tamanho adaptativo)
         val = self.var_valor.get() or "R$ 0,00"
         cor_val = self.cor_acento if ("TOTAL" in self.titulo or "R$" in val) else self.fg_val_default
+        tam_fonte = 12 if w >= 155 else 10
         self.create_text(
-            x1 + 14, y1 + 46,
+            x1 + 12, y1 + 40,
             text=val,
             anchor="w",
             fill=cor_val,
-            font=("Segoe UI", 13, "bold")
+            font=("Segoe UI", tam_fonte, "bold")
         )
 
         # 5. Micro-Legenda Inferior
         self.create_text(
-            x1 + 14, y1 + 70,
+            x1 + 12, y1 + 60,
             text=self.subtexto,
             anchor="w",
             fill=self.fg_sub,
@@ -305,14 +326,15 @@ class JanelaDownloadBoletos(tk.Toplevel):
         pasta_destino_base: str,
         modo_noturno: bool,
         modo_headless: bool,
-        on_concluido_callback=None
+        on_concluido_callback=None,
+        caminho_arquivo: str = ""
     ):
         super().__init__(parent)
         self.title("Central de Download de Boletos - Licenciamento e IPVA")
-        self.geometry("820x620")
-        self.minsize(750, 520)
         self.transient(parent)
         self.grab_set()
+
+        self._ajustar_geometria_responsiva()
 
         self.df_frota = df_frota
         self.col_placa = col_placa
@@ -322,6 +344,12 @@ class JanelaDownloadBoletos(tk.Toplevel):
         self.modo_noturno = modo_noturno
         self.modo_headless = modo_headless
         self.on_concluido_callback = on_concluido_callback
+        self.caminho_arquivo = caminho_arquivo
+
+        self.nome_frota = ""
+        if caminho_arquivo:
+            base = FrotaDataProcessor.gerar_nome_base_resultado(caminho_arquivo)
+            self.nome_frota = re.sub(r"^resultados[_\-\s]*", "", base, flags=re.IGNORECASE).strip() or base
 
         self.downloader: FrotaBoletoDownloader | None = None
         self.is_baixando = False
@@ -335,6 +363,44 @@ class JanelaDownloadBoletos(tk.Toplevel):
         self._criar_layout()
 
         self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
+
+    def _ajustar_geometria_responsiva(self):
+        """
+        Ajusta e centraliza a Janela Modal de Download de Boletos de acordo com a
+        resolução do monitor e a janela principal, garantindo que botões e lista fiquem visíveis.
+        """
+        self.update_idletasks()
+        tela_w = self.winfo_screenwidth()
+        tela_h = self.winfo_screenheight()
+
+        margem_h = 40
+        margem_v = 70
+
+        min_w = 680
+        min_h = 420
+
+        largura = min(840, max(min_w, tela_w - margem_h))
+        altura = min(560, max(min_h, tela_h - margem_v))
+
+        if tela_w <= 1366:
+            largura = min(largura, max(min_w, int(tela_w * 0.90)))
+        if tela_h <= 800:
+            altura = min(altura, max(min_h, int((tela_h - margem_v) * 0.90)))
+
+        try:
+            p = self.master
+            p.update_idletasks()
+            pos_x = p.winfo_rootx() + (p.winfo_width() - largura) // 2
+            pos_y = p.winfo_rooty() + (p.winfo_height() - altura) // 2
+        except Exception:
+            pos_x = (tela_w - largura) // 2
+            pos_y = (tela_h - margem_v - altura) // 2
+
+        pos_x = max(10, min(pos_x, max(10, tela_w - largura - 10)))
+        pos_y = max(10, min(pos_y, max(10, tela_h - margem_v - altura)))
+
+        self.minsize(min_w, min_h)
+        self.geometry(f"{largura}x{altura}+{pos_x}+{pos_y}")
 
     def _aplicar_estilo(self):
         if self.modo_noturno:
@@ -399,24 +465,29 @@ class JanelaDownloadBoletos(tk.Toplevel):
                 })
 
     def _criar_layout(self):
-        container = ttk.Frame(self, style="PremiumBoleto.TFrame", padding="16 14 16 14")
+        container = ttk.Frame(self, style="PremiumBoleto.TFrame", padding="14 12 14 12")
         container.pack(fill=tk.BOTH, expand=True)
 
-        # 1. Header Executivo do Modal
+        # 1. Header Executivo do Modal (Fixado no topo)
         frame_header = tk.Frame(container, bg=self.bg_card, relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.border_card)
-        frame_header.pack(fill=tk.X, pady=(0, 12), ipady=8, ipadx=10)
+        frame_header.pack(side=tk.TOP, fill=tk.X, pady=(0, 6), ipady=5, ipadx=10)
 
         lbl_tit = tk.Label(
             frame_header,
             text="📥 Central Executiva de Emissão de Boletos (PDF)",
-            font=("Segoe UI", 12, "bold"),
+            font=("Segoe UI", 11, "bold"),
             bg=self.bg_card,
             fg=self.fg_title
         )
         lbl_tit.pack(anchor="w")
 
         data_hoje = datetime.now().strftime("%d-%m-%Y")
-        pasta_prevista = os.path.join(self.pasta_destino_base, f"Licenciamento-IPVA ({data_hoje})")
+        nome_pasta_prevista = (
+            f"Licenciamento-IPVA ({self.nome_frota} - {data_hoje})"
+            if self.nome_frota
+            else f"Licenciamento-IPVA ({data_hoje})"
+        )
+        pasta_prevista = os.path.join(self.pasta_destino_base, nome_pasta_prevista)
         vencimento_ipva = obter_ultimo_dia_util_mes()
 
         sub_msg = (
@@ -424,11 +495,11 @@ class JanelaDownloadBoletos(tk.Toplevel):
             f"📅 Vencimento Legal do IPVA: {vencimento_ipva} (Último dia útil do mês)"
         )
         lbl_sub = tk.Label(frame_header, text=sub_msg, font=("Segoe UI", 8), bg=self.bg_card, fg=self.fg_muted, justify=tk.LEFT)
-        lbl_sub.pack(anchor="w", pady=(3, 0))
+        lbl_sub.pack(anchor="w", pady=(2, 0))
 
-        # 2. Barra de Seleção Rápida em Pílulas
+        # 2. Barra de Seleção Rápida em Pílulas (Fixada no topo)
         frame_acoes = tk.Frame(container, bg=self.bg_card, relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.border_card)
-        frame_acoes.pack(fill=tk.X, pady=(0, 10), ipady=6, ipadx=8)
+        frame_acoes.pack(side=tk.TOP, fill=tk.X, pady=(0, 6), ipady=4, ipadx=8)
 
         ttk.Button(frame_acoes, text="☑️ Marcar Licenciamento", style="Muted.TButton", command=self._marcar_todos_licenciamento).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(frame_acoes, text="☑️ Marcar IPVA", style="Muted.TButton", command=self._marcar_todos_ipva).pack(side=tk.LEFT, padx=(0, 6))
@@ -444,17 +515,61 @@ class JanelaDownloadBoletos(tk.Toplevel):
         )
         self.lbl_contador_modal.pack(side=tk.RIGHT)
 
-        # 3. Lista de Veículos com Contêiner Rolável
+        # 4. Rodapé e Botões de Comando (FIXADO NO FUNDO - NUNCA ESCONDIDO!)
+        frame_rodape = ttk.Frame(container, style="PremiumBoleto.TFrame")
+        frame_rodape.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
+
+        self.var_progresso_txt = tk.StringVar(value="Selecione os boletos desejados e clique em Iniciar Download.")
+        self.lbl_progresso = ttk.Label(frame_rodape, textvariable=self.var_progresso_txt, font=("Segoe UI", 8, "bold"))
+        self.lbl_progresso.pack(anchor="w", pady=(0, 3))
+
+        self.barra_progresso = ttk.Progressbar(frame_rodape, mode="determinate")
+        self.barra_progresso.pack(fill=tk.X, pady=(0, 6))
+
+        frame_botoes = ttk.Frame(frame_rodape, style="PremiumBoleto.TFrame")
+        frame_botoes.pack(fill=tk.X)
+
+        self.btn_iniciar_dl = ttk.Button(
+            frame_botoes,
+            text="⚡ Iniciar Download dos Boletos",
+            style="PrimaryDownload.TButton",
+            state="normal" if self.itens_boletos else "disabled",
+            command=self._iniciar_downloads
+        )
+        self.btn_iniciar_dl.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_pausar_dl = ttk.Button(frame_botoes, text="⏸️ Pausar", style="Secondary.TButton", state="disabled", command=self._alternar_pausa_downloads)
+        self.btn_pausar_dl.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_cancelar_dl = ttk.Button(frame_botoes, text="⏹️ Cancelar", style="Danger.TButton", state="disabled", command=self._cancelar_downloads)
+        self.btn_cancelar_dl.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_abrir_pasta_boletos = ttk.Button(frame_botoes, text="📂 Abrir Pasta", style="Secondary.TButton", state="disabled", command=self._abrir_pasta_boletos)
+        self.btn_abrir_pasta_boletos.pack(side=tk.LEFT)
+
+        ttk.Button(frame_botoes, text="Fechar", style="Muted.TButton", command=self._ao_fechar).pack(side=tk.RIGHT)
+
+        # 3. Lista de Veículos com Contêiner Rolável (OCUPA O ESPAÇO RESTANTE NO CENTRO)
         frame_scroll = tk.Frame(container, bg=self.bg_card, relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.border_card)
-        frame_scroll.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        frame_scroll.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 6))
 
         canvas = tk.Canvas(frame_scroll, bg=self.bg_card, highlightthickness=0)
         scrollbar = ttk.Scrollbar(frame_scroll, orient="vertical", command=canvas.yview)
         scrollable_frame = ttk.Frame(canvas, style="PremiumBoletoCard.TFrame")
 
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas_window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Responsividade do frame interno no Canvas
+        def _ao_redimensionar_canvas(event):
+            canvas.itemconfig(canvas_window_id, width=event.width)
+        canvas.bind("<Configure>", _ao_redimensionar_canvas)
+
+        # Rolagem suave pelo mousewheel do Windows
+        def _rolar_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self.bind_all("<MouseWheel>", _rolar_mousewheel)
 
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=4)
@@ -500,40 +615,6 @@ class JanelaDownloadBoletos(tk.Toplevel):
                 lbl_st = tk.Label(card_item, text="Pendente", font=("Segoe UI", 8, "bold"), bg=self.bg_item, fg=self.fg_muted)
                 lbl_st.pack(side=tk.RIGHT, padx=6)
                 item["lbl_status"] = lbl_st
-
-        # 4. Rodapé e Botões de Comando
-        frame_rodape = ttk.Frame(container, style="PremiumBoleto.TFrame")
-        frame_rodape.pack(fill=tk.X)
-
-        self.var_progresso_txt = tk.StringVar(value="Selecione os boletos desejados e clique em Iniciar Download.")
-        self.lbl_progresso = ttk.Label(frame_rodape, textvariable=self.var_progresso_txt, font=("Segoe UI", 8, "bold"))
-        self.lbl_progresso.pack(anchor="w", pady=(0, 4))
-
-        self.barra_progresso = ttk.Progressbar(frame_rodape, mode="determinate")
-        self.barra_progresso.pack(fill=tk.X, pady=(0, 8))
-
-        frame_botoes = ttk.Frame(frame_rodape, style="PremiumBoleto.TFrame")
-        frame_botoes.pack(fill=tk.X)
-
-        self.btn_iniciar_dl = ttk.Button(
-            frame_botoes,
-            text="⚡ Iniciar Download dos Boletos",
-            style="PrimaryDownload.TButton",
-            state="normal" if self.itens_boletos else "disabled",
-            command=self._iniciar_downloads
-        )
-        self.btn_iniciar_dl.pack(side=tk.LEFT, padx=(0, 8))
-
-        self.btn_pausar_dl = ttk.Button(frame_botoes, text="⏸️ Pausar", style="Secondary.TButton", state="disabled", command=self._alternar_pausa_downloads)
-        self.btn_pausar_dl.pack(side=tk.LEFT, padx=(0, 8))
-
-        self.btn_cancelar_dl = ttk.Button(frame_botoes, text="⏹️ Cancelar", style="Danger.TButton", state="disabled", command=self._cancelar_downloads)
-        self.btn_cancelar_dl.pack(side=tk.LEFT, padx=(0, 8))
-
-        self.btn_abrir_pasta_boletos = ttk.Button(frame_botoes, text="📂 Abrir Pasta", style="Secondary.TButton", state="disabled", command=self._abrir_pasta_boletos)
-        self.btn_abrir_pasta_boletos.pack(side=tk.LEFT)
-
-        ttk.Button(frame_botoes, text="Fechar", style="Muted.TButton", command=self._ao_fechar).pack(side=tk.RIGHT)
 
     def _marcar_todos_licenciamento(self):
         for item in self.itens_boletos:
@@ -598,7 +679,11 @@ class JanelaDownloadBoletos(tk.Toplevel):
 
     def _executar_downloads_thread(self, tarefas: list[tuple[dict, str]]):
         total_geral = len(tarefas)
-        self.downloader = FrotaBoletoDownloader(self.pasta_destino_base, headless=self.modo_headless)
+        self.downloader = FrotaBoletoDownloader(
+            self.pasta_destino_base,
+            headless=self.modo_headless,
+            nome_frota=self.nome_frota
+        )
 
         try:
             self.downloader.iniciar()
@@ -734,6 +819,10 @@ class JanelaDownloadBoletos(tk.Toplevel):
             os.startfile(self.pasta_destino_base)
 
     def _ao_fechar(self):
+        try:
+            self.unbind_all("<MouseWheel>")
+        except Exception:
+            pass
         if self.is_baixando:
             if not messagebox.askyesno("Fechar", "O download de boletos está em andamento. Deseja cancelar e fechar?"):
                 return
@@ -751,8 +840,7 @@ class AppConsultaFrotaGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Consulta de Frota - Detran/Sefaz CE (v3.0)")
-        self.root.geometry("980x800")
-        self.root.minsize(900, 720)
+        self._ajustar_geometria_responsiva()
 
         # Carrega preferências persistentes
         self.cfg = ConfigManager.carregar()
@@ -933,6 +1021,9 @@ class AppConsultaFrotaGUI:
         self.style.configure("Primary.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_pri, foreground="#FFFFFF", padding=(14, 7))
         self.style.map("Primary.TButton", background=[("active", bg_btn_pri_act), ("disabled", "#4B5563" if self.modo_noturno else "#94A3B8")])
 
+        self.style.configure("PrimaryDownload.TButton", font=("Segoe UI", 9, "bold"), background="#059669", foreground="#FFFFFF", padding=(12, 6))
+        self.style.map("PrimaryDownload.TButton", background=[("active", "#047857"), ("disabled", "#4B5563" if self.modo_noturno else "#94A3B8")])
+
         self.style.configure("Action.TButton", font=("Segoe UI", 9, "bold"), background=bg_btn_act, foreground="#FFFFFF", padding=(14, 7))
         self.style.map("Action.TButton", background=[("active", bg_btn_act_act), ("disabled", "#4B5563" if self.modo_noturno else "#94A3B8")])
 
@@ -1016,13 +1107,60 @@ class AppConsultaFrotaGUI:
         self._salvar_preferencias()
         self._aplicar_tema()
 
+    def _ajustar_geometria_responsiva(self):
+        """
+        Calcula e ajusta as dimensões da janela de forma adaptativa conforme a
+        resolução da tela e proporção do monitor do usuário, garantindo que
+        o rodapé e os botões de ação nunca fiquem escondidos.
+        """
+        self.root.update_idletasks()
+        tela_w = self.root.winfo_screenwidth()
+        tela_h = self.root.winfo_screenheight()
+
+        margem_h = 40
+        margem_v = 70
+
+        min_w = 820
+        min_h = 520
+
+        if tela_w >= 1920:
+            largura = 1140
+        elif tela_w >= 1600:
+            largura = 1060
+        elif tela_w >= 1366:
+            largura = 980
+        elif tela_w >= 1200:
+            largura = 920
+        else:
+            largura = max(min_w, tela_w - margem_h)
+
+        if tela_h >= 1080:
+            altura = 760
+        elif tela_h >= 900:
+            altura = 710
+        elif tela_h >= 768:
+            altura = 640
+        elif tela_h >= 720:
+            altura = 600
+        else:
+            altura = max(min_h, tela_h - margem_v)
+
+        largura = min(largura, max(min_w, tela_w - margem_h))
+        altura = min(altura, max(min_h, tela_h - margem_v))
+
+        pos_x = max(0, (tela_w - largura) // 2)
+        pos_y = max(0, (tela_h - margem_v - altura) // 2)
+
+        self.root.minsize(min_w, min_h)
+        self.root.geometry(f"{largura}x{altura}+{pos_x}+{pos_y}")
+
     def _criar_layout(self):
-        container = ttk.Frame(self.root, padding="14 12 14 12")
+        container = ttk.Frame(self.root, padding="12 8 12 8")
         container.pack(fill=tk.BOTH, expand=True)
 
         # 1. BARRA SUPERIOR ELEGANTE (BRANDING & TELEMETRIA)
         frame_topo = ttk.Frame(container)
-        frame_topo.pack(fill=tk.X, pady=(0, 10))
+        frame_topo.pack(side=tk.TOP, fill=tk.X, pady=(0, 6))
 
         frame_titulos = ttk.Frame(frame_topo)
         frame_titulos.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -1069,12 +1207,12 @@ class AppConsultaFrotaGUI:
         self.btn_tema.pack(side=tk.RIGHT, padx=(8, 0), pady=2)
 
         # 2. PAINEL DE CONTROLE EXECUTIVO (CONFIGURAÇÕES E ARQUIVO)
-        frame_configs = ttk.LabelFrame(container, text=" Painel de Controle e Parâmetros da Frota ", style="Card.TLabelframe", padding="12 10 12 10")
-        frame_configs.pack(fill=tk.X, pady=(0, 8))
+        frame_configs = ttk.LabelFrame(container, text=" Painel de Controle e Parâmetros da Frota ", style="Card.TLabelframe", padding="10 6 10 6")
+        frame_configs.pack(side=tk.TOP, fill=tk.X, pady=(0, 6))
 
         # Linha 1: Seleção de Planilha e Pasta Destino
         linha_arquivo = ttk.Frame(frame_configs, style="Card.TFrame")
-        linha_arquivo.pack(fill=tk.X, pady=(0, 8))
+        linha_arquivo.pack(fill=tk.X, pady=(0, 6))
 
         self.btn_selecionar = ttk.Button(
             linha_arquivo,
@@ -1103,71 +1241,71 @@ class AppConsultaFrotaGUI:
 
         # Linha 2: Motores de Consulta e Velocidade
         linha_filtros = ttk.Frame(frame_configs, style="Card.TFrame")
-        linha_filtros.pack(fill=tk.X, pady=(0, 8))
+        linha_filtros.pack(fill=tk.X, pady=(0, 6))
 
         lbl_filtro_txt = ttk.Label(linha_filtros, text="Motores Ativos:", font=("Segoe UI", 9, "bold"), style="Card.TLabel")
         lbl_filtro_txt.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.chk_ipva = ttk.Checkbutton(linha_filtros, text="🏛️ IPVA (Sefaz-CE)", variable=self.var_ipva, style="Card.TCheckbutton")
-        self.chk_ipva.pack(side=tk.LEFT, padx=(0, 10))
+        self.chk_ipva = ttk.Checkbutton(linha_filtros, text="🏛️ IPVA (Sefaz)", variable=self.var_ipva, style="Card.TCheckbutton")
+        self.chk_ipva.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.chk_lic = ttk.Checkbutton(linha_filtros, text="📋 Licenciamento (Detran-CE)", variable=self.var_lic, style="Card.TCheckbutton")
-        self.chk_lic.pack(side=tk.LEFT, padx=(0, 10))
+        self.chk_lic = ttk.Checkbutton(linha_filtros, text="📋 Licenciamento (Detran)", variable=self.var_lic, style="Card.TCheckbutton")
+        self.chk_lic.pack(side=tk.LEFT, padx=(0, 8))
 
-        self.chk_multas = ttk.Checkbutton(linha_filtros, text="🚨 Multas (Detran-CE)", variable=self.var_multas, style="Card.TCheckbutton")
-        self.chk_multas.pack(side=tk.LEFT, padx=(0, 12))
+        self.chk_multas = ttk.Checkbutton(linha_filtros, text="🚨 Multas (Detran)", variable=self.var_multas, style="Card.TCheckbutton")
+        self.chk_multas.pack(side=tk.LEFT, padx=(0, 10))
 
         self.btn_toggle_filtros = ttk.Button(
             linha_filtros,
-            text="☑️ Marcar/Desmarcar Todos",
+            text="☑️ Todos",
             style="Muted.TButton",
             command=self._alternar_todos_filtros
         )
-        self.btn_toggle_filtros.pack(side=tk.LEFT, padx=(0, 16))
-
-        lbl_workers = ttk.Label(linha_filtros, text="Velocidade / Concorrência:", font=("Segoe UI", 9, "bold"), style="Card.TLabel")
-        lbl_workers.pack(side=tk.LEFT, padx=(0, 6))
+        self.btn_toggle_filtros.pack(side=tk.LEFT, padx=(0, 12))
 
         self.combo_workers = ttk.Combobox(
             linha_filtros,
             values=["1x (Sequencial)", "2x Paralelo", "3x Paralelo", "4x Máximo"],
             state="readonly",
-            width=15
+            width=14
         )
         idx_w = max(0, min(self.var_workers.get() - 1, 3))
         self.combo_workers.current(idx_w)
         self.combo_workers.bind("<<ComboboxSelected>>", self._ao_mudar_workers)
-        self.combo_workers.pack(side=tk.LEFT)
+        self.combo_workers.pack(side=tk.RIGHT)
+
+        lbl_workers = ttk.Label(linha_filtros, text="Velocidade:", font=("Segoe UI", 9, "bold"), style="Card.TLabel")
+        lbl_workers.pack(side=tk.RIGHT, padx=(0, 6))
 
         # Linha 3: Exportação, Headless e Comandos Principais
         linha_opcoes = ttk.Frame(frame_configs, style="Card.TFrame")
         linha_opcoes.pack(fill=tk.X, pady=(0, 2))
 
         lbl_exp = ttk.Label(linha_opcoes, text="Exportação:", font=("Segoe UI", 9, "bold"), style="Card.TLabel")
-        lbl_exp.pack(side=tk.LEFT, padx=(0, 8))
+        lbl_exp.pack(side=tk.LEFT, padx=(0, 6))
 
-        rb_excel = ttk.Radiobutton(linha_opcoes, text="Excel (.xlsx)", value="excel", variable=self.var_formato_exportacao, style="Card.TRadiobutton")
-        rb_excel.pack(side=tk.LEFT, padx=(0, 8))
+        rb_excel = ttk.Radiobutton(linha_opcoes, text="Excel", value="excel", variable=self.var_formato_exportacao, style="Card.TRadiobutton")
+        rb_excel.pack(side=tk.LEFT, padx=(0, 6))
 
         rb_pdf = ttk.Radiobutton(
             linha_opcoes,
-            text="PDF (.pdf)",
+            text="PDF",
             value="pdf",
             variable=self.var_formato_exportacao,
             style="Card.TRadiobutton",
             state="normal" if REPORTLAB_DISPONIVEL else "disabled"
         )
-        rb_pdf.pack(side=tk.LEFT, padx=(0, 8))
+        rb_pdf.pack(side=tk.LEFT, padx=(0, 6))
 
         rb_ambos = ttk.Radiobutton(
             linha_opcoes,
-            text="Ambos (Excel + PDF)",
+            text="Ambos",
             value="ambos",
             variable=self.var_formato_exportacao,
             style="Card.TRadiobutton",
             state="normal" if REPORTLAB_DISPONIVEL else "disabled"
         )
-        rb_ambos.pack(side=tk.LEFT, padx=(0, 12))
+        rb_ambos.pack(side=tk.LEFT, padx=(0, 10))
 
         self.chk_headless = ttk.Checkbutton(
             linha_opcoes,
@@ -1177,7 +1315,7 @@ class AppConsultaFrotaGUI:
         )
         self.chk_headless.pack(side=tk.LEFT)
 
-        # Botões de Execução
+        # Botões de Execução (fixados à direita)
         self.btn_cancelar = ttk.Button(
             linha_opcoes,
             text="⏹️ Cancelar",
@@ -1185,7 +1323,7 @@ class AppConsultaFrotaGUI:
             state="disabled",
             command=self._cancelar_processamento
         )
-        self.btn_cancelar.pack(side=tk.RIGHT, padx=(6, 0))
+        self.btn_cancelar.pack(side=tk.RIGHT, padx=(4, 0))
 
         self.btn_pausar = ttk.Button(
             linha_opcoes,
@@ -1194,7 +1332,7 @@ class AppConsultaFrotaGUI:
             state="disabled",
             command=self._alternar_pausa
         )
-        self.btn_pausar.pack(side=tk.RIGHT, padx=(6, 0))
+        self.btn_pausar.pack(side=tk.RIGHT, padx=(4, 0))
 
         self.btn_iniciar = ttk.Button(
             linha_opcoes,
@@ -1205,9 +1343,98 @@ class AppConsultaFrotaGUI:
         )
         self.btn_iniciar.pack(side=tk.RIGHT)
 
-        # 3. ACOMPANHAMENTO EM TEMPO REAL: TABELA E CONSOLE SINTÁTICO
-        frame_centro = ttk.LabelFrame(container, text=" Central de Monitoramento e Auditoria ", style="Card.TLabelframe", padding="10 8 10 8")
-        frame_centro.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        # 5. BARRA DE PROGRESSO & PAINEL DE AÇÕES EXECUTIVAS (FIXADO NO FUNDO - NUNCA ESCONDIDO!)
+        frame_rodape = ttk.Frame(container)
+        frame_rodape.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 0))
+
+        self.lbl_status = ttk.Label(
+            frame_rodape,
+            textvariable=self.var_status,
+            font=("Segoe UI", 9, "bold")
+        )
+        self.lbl_status.pack(anchor="w", pady=(0, 3))
+
+        self.barra_progresso = ttk.Progressbar(frame_rodape, mode="determinate")
+        self.barra_progresso.pack(fill=tk.X, pady=(0, 6))
+
+        frame_botoes_finais = ttk.Frame(frame_rodape)
+        frame_botoes_finais.pack(fill=tk.X)
+
+        # BOTÃO GLAMOUROSO DE DOWNLOAD DE BOLETOS (Fixado com prioridade máxima à direita)
+        self.btn_baixar_boletos = ttk.Button(
+            frame_botoes_finais,
+            text="📥 Central de Download de Boletos (PDF)",
+            style="PrimaryDownload.TButton",
+            state="disabled",
+            command=self._abrir_central_download_boletos
+        )
+        self.btn_baixar_boletos.pack(side=tk.RIGHT)
+
+        self.btn_abrir_excel = ttk.Button(
+            frame_botoes_finais,
+            text="📊 Relatório Excel",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._abrir_excel_gerado
+        )
+        self.btn_abrir_excel.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.btn_abrir_pdf = ttk.Button(
+            frame_botoes_finais,
+            text="📄 Relatório PDF",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._abrir_pdf_gerado
+        )
+        self.btn_abrir_pdf.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.btn_abrir_pasta = ttk.Button(
+            frame_botoes_finais,
+            text="📂 Pasta Destino",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._abrir_pasta_destino
+        )
+        self.btn_abrir_pasta.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.btn_reconsultar_falhas = ttk.Button(
+            frame_botoes_finais,
+            text="⚠️ Reconsultar Falhas",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._reconsultar_apenas_falhas
+        )
+        self.btn_reconsultar_falhas.pack(side=tk.LEFT, padx=(0, 8))
+
+        # 4. DASHBOARD DE MÉTRICAS ORNAMENTADO (FIXADO LOGO ACIMA DO RODAPÉ)
+        frame_metricas = ttk.Frame(container)
+        frame_metricas.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 0))
+
+        self.luxury_cards.clear()
+        card_configs = [
+            ("FROTA TOTAL", self.var_metricas_veiculos, "🚘", "#3B82F6", "✦ Registros Válidos"),
+            ("LICENCIAMENTO", self.var_metricas_lic, "📋", "#F59E0B", "✦ Detran-CE"),
+            ("IPVA EM ABERTO", self.var_metricas_ipva, "🏛️", "#F43F5E", "✦ Sefaz-CE"),
+            ("MULTAS DETRAN", self.var_metricas_multas, "🚨", "#EA580C", "✦ Infrações Ativas"),
+            ("TOTAL CONSOLIDADO", self.var_metricas_total, "💎", "#10B981", "✦ Saldo Total a Liquidar"),
+        ]
+
+        for titulo, var_val, icone, cor_acento, sub in card_configs:
+            c = LuxuryMetricCard(
+                frame_metricas,
+                titulo=titulo,
+                var_valor=var_val,
+                icone=icone,
+                cor_acento=cor_acento,
+                subtexto=sub,
+                modo_noturno=self.modo_noturno
+            )
+            c.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=3)
+            self.luxury_cards.append(c)
+
+        # 3. ACOMPANHAMENTO EM TEMPO REAL: TABELA E CONSOLE SINTÁTICO (EXPANDE NO CENTRO)
+        frame_centro = ttk.LabelFrame(container, text=" Central de Monitoramento e Auditoria ", style="Card.TLabelframe", padding="8 6 8 6")
+        frame_centro.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 4))
 
         self.notebook = ttk.Notebook(frame_centro)
         self.notebook.pack(fill=tk.BOTH, expand=True)
@@ -1220,37 +1447,47 @@ class AppConsultaFrotaGUI:
         frame_filtros_bar = ttk.Frame(aba_tabela)
         frame_filtros_bar.pack(fill=tk.X, pady=(0, 6))
 
+        # Botão redundante de atalho direto para Boletos na barra superior da tabela
+        self.btn_boletos_tabela = ttk.Button(
+            frame_filtros_bar,
+            text="📥 Central de Boletos (PDF)",
+            style="PrimaryDownload.TButton",
+            state="disabled",
+            command=self._abrir_central_download_boletos
+        )
+        self.btn_boletos_tabela.pack(side=tk.RIGHT)
+
         ttk.Label(frame_filtros_bar, text="🔍 Busca:", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 4))
-        self.entry_busca = ttk.Entry(frame_filtros_bar, textvariable=self.var_busca, width=22)
+        self.entry_busca = ttk.Entry(frame_filtros_bar, textvariable=self.var_busca, width=20)
         self.entry_busca.pack(side=tk.LEFT, padx=(0, 6))
         self.var_busca.trace_add("write", lambda *_: self._filtrar_tabela())
 
-        ttk.Button(frame_filtros_bar, text="✖ Limpar", style="Muted.TButton", command=lambda: self.var_busca.set("")).pack(side=tk.LEFT, padx=(0, 14))
+        ttk.Button(frame_filtros_bar, text="✖ Limpar", style="Muted.TButton", command=lambda: self.var_busca.set("")).pack(side=tk.LEFT, padx=(0, 10))
 
         # Pílulas Rápidas de Filtro
         self.botoes_filtro["TODOS"] = ttk.Button(
             frame_filtros_bar, text="✦ Todos (0)", style="ActiveFilter.TButton",
             command=lambda: self._definir_filtro_pílula("TODOS")
         )
-        self.botoes_filtro["TODOS"].pack(side=tk.LEFT, padx=(0, 4))
+        self.botoes_filtro["TODOS"].pack(side=tk.LEFT, padx=(0, 3))
 
         self.botoes_filtro["DEBITOS"] = ttk.Button(
-            frame_filtros_bar, text="⚠️ Com Débitos (0)", style="Muted.TButton",
+            frame_filtros_bar, text="⚠️ Débitos (0)", style="Muted.TButton",
             command=lambda: self._definir_filtro_pílula("DEBITOS")
         )
-        self.botoes_filtro["DEBITOS"].pack(side=tk.LEFT, padx=(0, 4))
+        self.botoes_filtro["DEBITOS"].pack(side=tk.LEFT, padx=(0, 3))
 
         self.botoes_filtro["PAGOS"] = ttk.Button(
-            frame_filtros_bar, text="✅ Pagos / Sem Débito (0)", style="Muted.TButton",
+            frame_filtros_bar, text="✅ Pagos (0)", style="Muted.TButton",
             command=lambda: self._definir_filtro_pílula("PAGOS")
         )
-        self.botoes_filtro["PAGOS"].pack(side=tk.LEFT, padx=(0, 4))
+        self.botoes_filtro["PAGOS"].pack(side=tk.LEFT, padx=(0, 3))
 
         self.botoes_filtro["RESTRICAO"] = ttk.Button(
             frame_filtros_bar, text="🚨 Restrições (0)", style="Muted.TButton",
             command=lambda: self._definir_filtro_pílula("RESTRICAO")
         )
-        self.botoes_filtro["RESTRICAO"].pack(side=tk.LEFT, padx=(0, 4))
+        self.botoes_filtro["RESTRICAO"].pack(side=tk.LEFT, padx=(0, 3))
 
         self.botoes_filtro["FALHAS"] = ttk.Button(
             frame_filtros_bar, text="❌ Falhas (0)", style="Muted.TButton",
@@ -1260,7 +1497,7 @@ class AppConsultaFrotaGUI:
 
         # Treeview com Colunas Alinhadas
         colunas = ("num", "placa", "renavam", "licenciamento", "ipva", "multas", "total_pagar", "situacao")
-        self.tree = ttk.Treeview(aba_tabela, columns=colunas, show="headings", selectmode="extended")
+        self.tree = ttk.Treeview(aba_tabela, columns=colunas, show="headings", selectmode="extended", height=6)
 
         cabecalhos_nomes = [
             ("num", "#", 45, "center"),
@@ -1294,100 +1531,11 @@ class AppConsultaFrotaGUI:
         aba_logs = ttk.Frame(self.notebook, padding="4 4 4 4")
         self.notebook.add(aba_logs, text=" 📜 Terminal Executivo de Logs ")
 
-        self.txt_logs = tk.Text(aba_logs, wrap=tk.WORD, font=("Consolas", 9), relief=tk.FLAT, padx=10, pady=10)
+        self.txt_logs = tk.Text(aba_logs, height=6, wrap=tk.WORD, font=("Consolas", 9), relief=tk.FLAT, padx=10, pady=10)
         scroll_logs = ttk.Scrollbar(aba_logs, orient="vertical", command=self.txt_logs.yview)
         self.txt_logs.configure(yscrollcommand=scroll_logs.set)
         self.txt_logs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll_logs.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # 4. DASHBOARD DE MÉTRICAS ORNAMENTADO (LUXURY CANVAS CARDS)
-        frame_metricas = ttk.Frame(container)
-        frame_metricas.pack(fill=tk.X, pady=(0, 8))
-
-        self.luxury_cards.clear()
-        card_configs = [
-            ("FROTA TOTAL", self.var_metricas_veiculos, "🚘", "#3B82F6", "✦ Registros Válidos"),
-            ("LICENCIAMENTO", self.var_metricas_lic, "📋", "#F59E0B", "✦ Detran-CE"),
-            ("IPVA EM ABERTO", self.var_metricas_ipva, "🏛️", "#F43F5E", "✦ Sefaz-CE"),
-            ("MULTAS DETRAN", self.var_metricas_multas, "🚨", "#EA580C", "✦ Infrações Ativas"),
-            ("TOTAL CONSOLIDADO", self.var_metricas_total, "💎", "#10B981", "✦ Saldo Total a Liquidar"),
-        ]
-
-        for titulo, var_val, icone, cor_acento, sub in card_configs:
-            c = LuxuryMetricCard(
-                frame_metricas,
-                titulo=titulo,
-                var_valor=var_val,
-                icone=icone,
-                cor_acento=cor_acento,
-                subtexto=sub,
-                modo_noturno=self.modo_noturno
-            )
-            c.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
-            self.luxury_cards.append(c)
-
-        # 5. BARRA DE PROGRESSO & PAINEL DE AÇÕES EXECUTIVAS
-        frame_rodape = ttk.Frame(container)
-        frame_rodape.pack(fill=tk.X)
-
-        self.lbl_status = ttk.Label(
-            frame_rodape,
-            textvariable=self.var_status,
-            font=("Segoe UI", 9, "bold")
-        )
-        self.lbl_status.pack(anchor="w", pady=(0, 4))
-
-        self.barra_progresso = ttk.Progressbar(frame_rodape, mode="determinate")
-        self.barra_progresso.pack(fill=tk.X, pady=(0, 8))
-
-        frame_botoes_finais = ttk.Frame(frame_rodape)
-        frame_botoes_finais.pack(fill=tk.X)
-
-        self.btn_abrir_excel = ttk.Button(
-            frame_botoes_finais,
-            text="📊 Relatório Excel",
-            style="Secondary.TButton",
-            state="disabled",
-            command=self._abrir_excel_gerado
-        )
-        self.btn_abrir_excel.pack(side=tk.LEFT, padx=(0, 6))
-
-        self.btn_abrir_pdf = ttk.Button(
-            frame_botoes_finais,
-            text="📄 Relatório PDF",
-            style="Secondary.TButton",
-            state="disabled",
-            command=self._abrir_pdf_gerado
-        )
-        self.btn_abrir_pdf.pack(side=tk.LEFT, padx=(0, 6))
-
-        self.btn_abrir_pasta = ttk.Button(
-            frame_botoes_finais,
-            text="📂 Abrir Pasta",
-            style="Secondary.TButton",
-            state="disabled",
-            command=self._abrir_pasta_destino
-        )
-        self.btn_abrir_pasta.pack(side=tk.LEFT, padx=(0, 6))
-
-        self.btn_reconsultar_falhas = ttk.Button(
-            frame_botoes_finais,
-            text="⚠️ Reconsultar Falhas",
-            style="Secondary.TButton",
-            state="disabled",
-            command=self._reconsultar_apenas_falhas
-        )
-        self.btn_reconsultar_falhas.pack(side=tk.LEFT, padx=(0, 10))
-
-        # BOTÃO GLAMOUROSO DE DOWNLOAD DE BOLETOS
-        self.btn_baixar_boletos = ttk.Button(
-            frame_botoes_finais,
-            text="📥 CENTRAL DE DOWNLOAD DE BOLETOS (PDF)",
-            style="Action.TButton",
-            state="disabled",
-            command=self._abrir_central_download_boletos
-        )
-        self.btn_baixar_boletos.pack(side=tk.RIGHT)
 
     def _ao_mudar_workers(self, _=None):
         val_str = self.combo_workers.get()
@@ -1518,16 +1666,23 @@ class AppConsultaFrotaGUI:
                 self.pasta_destino_var.set(pasta_padrao)
 
             nome = os.path.basename(caminho)
+            nome_base_saida = FrotaDataProcessor.gerar_nome_base_resultado(caminho)
             self.lbl_caminho.config(
-                text=f"Carregado: {nome} ({len(df)} veículos) | Colunas: '{col_p}', '{col_r}'",
+                text=f"Carregado: {nome} ({len(df)} veículos) ➔ Saída: '{nome_base_saida}.xlsx/.pdf'",
                 foreground="#90BE9F" if self.modo_noturno else "#15803D",
                 font=("Segoe UI", 9, "bold")
             )
 
+            # Reseta caminhos de relatórios anteriores para evitar conflitos entre frotas
+            self.arquivo_excel_gerado = ""
+            self.arquivo_pdf_gerado = ""
+            self.btn_abrir_excel.config(state="disabled")
+            self.btn_abrir_pdf.config(state="disabled")
+
             self.btn_iniciar.config(state="normal")
-            self.var_status.set(f"Arquivo carregado com sucesso: {len(df)} veículos válidos prontos.")
+            self.var_status.set(f"Arquivo carregado com sucesso: {len(df)} veículos prontos. Saída: {nome_base_saida}")
             self._preencher_tabela_inicial()
-            self._adicionar_log(f"Planilha '{nome}' carregada com {len(df)} registros válidos.")
+            self._adicionar_log(f"Planilha '{nome}' carregada ({len(df)} registros). Arquivos de saída configurados: '{nome_base_saida}.xlsx' e '{nome_base_saida}.pdf'")
 
         except Exception as e:
             messagebox.showerror("Erro ao Carregar", f"Não foi possível processar a planilha:\n\n{e}")
@@ -1546,6 +1701,10 @@ class AppConsultaFrotaGUI:
         self.var_metricas_ipva.set("R$ 0,00")
         self.var_metricas_multas.set("R$ 0,00")
         self.var_metricas_total.set("R$ 0,00")
+
+        self.btn_baixar_boletos.config(state="disabled")
+        if hasattr(self, "btn_boletos_tabela"):
+            self.btn_boletos_tabela.config(state="disabled")
 
         for idx, row in df.iterrows():
             placa = str(row[self.col_placa]).strip().upper()
@@ -1715,6 +1874,8 @@ class AppConsultaFrotaGUI:
         self.btn_pasta_destino.config(state="disabled")
         self.btn_reconsultar_falhas.config(state="disabled")
         self.btn_baixar_boletos.config(state="disabled")
+        if hasattr(self, "btn_boletos_tabela"):
+            self.btn_boletos_tabela.config(state="disabled")
         self.btn_pausar.config(state="normal", text="⏸️ Pausar")
         self.btn_cancelar.config(state="normal")
         self.btn_abrir_excel.config(state="disabled")
@@ -1744,7 +1905,7 @@ class AppConsultaFrotaGUI:
             if self.status_orb:
                 self.status_orb.definir_status("pausado", "CANCELAMENTO SOLICITADO")
 
-    def _salvar_checkpoint(self, pasta_destino: str, df: pd.DataFrame):
+    def _salvar_checkpoint(self, pasta_destino: str, df: pd.DataFrame, caminho_arquivo: str = ""):
         try:
             qtd_total = len(df)
             lics = [self.resultados_memoria.get(i, {}).get("lic", "-") for i in range(qtd_total)]
@@ -1755,7 +1916,9 @@ class AppConsultaFrotaGUI:
             df_chk = FrotaDataProcessor.consolidar_resultados(
                 df, lics, ipvas, multas, qtd_total, resultados_multas_a_vencer=multas_av
             )
-            chk_path = os.path.join(pasta_destino, "~checkpoint_frota_ce.xlsx")
+            _, _, chk_path = FrotaDataProcessor.obter_caminhos_arquivos_saida(
+                caminho_arquivo or self.caminho_arquivo.get(), pasta_destino
+            )
             df_chk.to_excel(chk_path, index=False)
         except Exception:
             pass
@@ -1774,8 +1937,10 @@ class AppConsultaFrotaGUI:
         pasta_destino = self.pasta_destino_var.get().strip() or os.path.dirname(os.path.abspath(caminho_arquivo))
         os.makedirs(pasta_destino, exist_ok=True)
 
-        arquivo_excel = os.path.join(pasta_destino, "resultados_frota_ce.xlsx")
-        arquivo_pdf = os.path.join(pasta_destino, "resultados_frota_ce.pdf")
+        arquivo_excel, arquivo_pdf, chk_path = FrotaDataProcessor.obter_caminhos_arquivos_saida(
+            caminho_arquivo, pasta_destino
+        )
+        nome_frota_log = FrotaDataProcessor.gerar_nome_base_resultado(caminho_arquivo)
 
         scrapers_ativos = []
         try:
@@ -1786,7 +1951,7 @@ class AppConsultaFrotaGUI:
             total_lote = len(lista_indices)
 
             self.root.after(0, lambda: self.var_status.set("Inicializando navegadores Chrome..."))
-            self._adicionar_log(f"Iniciando lote de {total_lote} veículos ({num_workers} worker(s)).")
+            self._adicionar_log(f"Iniciando lote de {total_lote} veículos ({num_workers} worker(s)). Destino: '{nome_frota_log}.xlsx' e '{nome_frota_log}.pdf'")
 
             # Fila ou partição simples por worker
             lock_memoria = threading.Lock()
@@ -1881,7 +2046,7 @@ class AppConsultaFrotaGUI:
                         self._adicionar_log(f"[{c_atual}/{total_lote}] {placa} | Lic: {val_detran_lic} | IPVA: {val_sefaz_ipva} | Multas: {val_detran_multas}")
 
                         if c_atual % 5 == 0:
-                            self._salvar_checkpoint(pasta_destino, df)
+                            self._salvar_checkpoint(pasta_destino, df, caminho_arquivo)
 
                 finally:
                     scraper.fechar()
@@ -1940,18 +2105,21 @@ class AppConsultaFrotaGUI:
             if consultar_lic: filtros_ativos.append("Licenciamento")
             if consultar_multas: filtros_ativos.append("Multas")
 
+            identificador_frota = re.sub(r"^resultados[_\-\s]*", "", nome_frota_log, flags=re.IGNORECASE).strip() or nome_frota_log
+
             if formato_export in ["excel", "ambos"]:
                 caminho_excel_gerado = FrotaRelatorioExporter.exportar_excel(df_final, arquivo_excel)
                 self.arquivo_excel_gerado = caminho_excel_gerado
+                self._adicionar_log(f"Planilha Excel gravada com sucesso: {os.path.basename(caminho_excel_gerado)}")
 
             if formato_export in ["pdf", "ambos"] and REPORTLAB_DISPONIVEL:
                 caminho_pdf_gerado = FrotaRelatorioExporter.exportar_pdf(
-                    df_final, arquivo_pdf, totais_dict, filtros_ativos
+                    df_final, arquivo_pdf, totais_dict, filtros_ativos, identificador_frota=identificador_frota
                 )
                 self.arquivo_pdf_gerado = caminho_pdf_gerado
+                self._adicionar_log(f"Relatório PDF gerado com sucesso: {os.path.basename(caminho_pdf_gerado)}")
 
             # Remove checkpoint temporário se tudo correu normalmente
-            chk_path = os.path.join(pasta_destino, "~checkpoint_frota_ce.xlsx")
             if os.path.exists(chk_path):
                 try: os.remove(chk_path)
                 except Exception: pass
@@ -2078,6 +2246,8 @@ class AppConsultaFrotaGUI:
         )
         if total_com_debitos > 0:
             self.btn_baixar_boletos.config(state="normal")
+            if hasattr(self, "btn_boletos_tabela"):
+                self.btn_boletos_tabela.config(state="normal")
 
         # Notificação Sonora no Windows
         if sys.platform == "win32":
@@ -2099,6 +2269,10 @@ class AppConsultaFrotaGUI:
         else:
             self.var_status.set("Processamento concluído com sucesso!")
             msg = f"Consultas concluídas com sucesso!\n\nTotal a Pagar na Frota: {self.var_metricas_total.get()}"
+            if arq_excel and os.path.exists(arq_excel):
+                msg += f"\n\n📊 Planilha Excel: {os.path.basename(arq_excel)}"
+            if arq_pdf and os.path.exists(arq_pdf):
+                msg += f"\n📑 Relatório PDF: {os.path.basename(arq_pdf)}"
             if total_com_debitos > 0:
                 msg += f"\n\n💡 {total_com_debitos} veículo(s) possuem débitos de Licenciamento ou IPVA.\nVocê pode usar o botão 'Baixar Boletos' abaixo para emitir os PDFs."
             messagebox.showinfo("Sucesso", msg)
@@ -2119,7 +2293,8 @@ class AppConsultaFrotaGUI:
             resultados_memoria=self.resultados_memoria,
             pasta_destino_base=pasta_base,
             modo_noturno=self.modo_noturno,
-            modo_headless=self.var_headless.get()
+            modo_headless=self.var_headless.get(),
+            caminho_arquivo=self.caminho_arquivo.get()
         )
 
     def _abrir_excel_gerado(self):
@@ -2147,6 +2322,7 @@ class AppConsultaFrotaGUI:
 
 
 def main():
+    configurar_dpi()
     ocultar_console()
     try:
         root = tk.Tk()

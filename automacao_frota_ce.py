@@ -11,6 +11,7 @@ Módulo de linha de comando que consome a arquitetura unificada de raspagem (v3.
 """
 
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -22,13 +23,13 @@ from core import (
     FrotaRelatorioExporter,
     formatar_moeda_float,
     formatar_float_moeda,
-    calcular_total_a_pagar_veiculo
+    calcular_total_a_pagar_veiculo,
+    gerar_nome_base_resultado,
+    obter_caminhos_arquivos_saida
 )
 
 HEADLESS_MODE = True
 ARQUIVO_ENTRADA = "frota.xlsx"
-ARQUIVO_SAIDA_EXCEL = "resultados_frota_ce.xlsx"
-ARQUIVO_SAIDA_PDF = "resultados_frota_ce.pdf"
 
 DADOS_TESTE = [
     {"Placa": "TII5F89", "RENAVAM": "01458899249"},
@@ -60,7 +61,8 @@ def processar_frota(
     caminho_entrada: str = ARQUIVO_ENTRADA,
     consultar_ipva: bool = True,
     consultar_lic: bool = True,
-    consultar_multas: bool = True
+    consultar_multas: bool = True,
+    pasta_destino: str | None = None
 ) -> pd.DataFrame | None:
     """Executa a rotina de automação via linha de comando."""
     print("=" * 70)
@@ -171,16 +173,26 @@ def processar_frota(
         "total": formatar_float_moeda(soma_total_real)
     }
 
+    if not pasta_destino:
+        pasta_destino = os.path.dirname(os.path.abspath(caminho_entrada)) if os.path.dirname(caminho_entrada) else "."
+
+    arquivo_excel, arquivo_pdf, chk_path = FrotaDataProcessor.obter_caminhos_arquivos_saida(
+        caminho_entrada, pasta_destino
+    )
+    nome_base = FrotaDataProcessor.gerar_nome_base_resultado(caminho_entrada)
+    identificador_frota = re.sub(r"^resultados[_\-\s]*", "", nome_base, flags=re.IGNORECASE).strip() or nome_base
+
     # Gera Excel com proteção contra PermissionError
-    caminho_excel = FrotaRelatorioExporter.exportar_excel(df_final, ARQUIVO_SAIDA_EXCEL)
+    caminho_excel = FrotaRelatorioExporter.exportar_excel(df_final, arquivo_excel)
     print(f"  -> Planilha Excel gerada: {os.path.abspath(caminho_excel)}")
 
     # Gera PDF Paisagem com proteção contra PermissionError
     caminho_pdf = FrotaRelatorioExporter.exportar_pdf(
         df_final,
-        ARQUIVO_SAIDA_PDF,
+        arquivo_pdf,
         totais_dict,
-        ["IPVA (Sefaz)", "Licenciamento (Detran)", "Multas (Detran)"]
+        ["IPVA (Sefaz)", "Licenciamento (Detran)", "Multas (Detran)"],
+        identificador_frota=identificador_frota
     )
     print(f"  -> Relatório PDF gerado:  {os.path.abspath(caminho_pdf)}")
 
@@ -193,4 +205,5 @@ def processar_frota(
 
 
 if __name__ == "__main__":
-    processar_frota()
+    arq = sys.argv[1] if len(sys.argv) > 1 else ARQUIVO_ENTRADA
+    processar_frota(caminho_entrada=arq)

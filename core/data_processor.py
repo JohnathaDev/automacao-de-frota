@@ -2,6 +2,7 @@
 Processamento, higienização e validação de dados de frotas com Pandas.
 Regras financeiras de formatação para relatórios e exibição.
 """
+import os
 import re
 from datetime import datetime, timedelta
 import pandas as pd
@@ -304,4 +305,83 @@ class FrotaDataProcessor:
         df_final["Data_Consulta"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
         return df_final
+
+    @staticmethod
+    def gerar_nome_base_resultado(caminho_ou_nome_arquivo: str) -> str:
+        """Delega para a função utilitária gerar_nome_base_resultado."""
+        return gerar_nome_base_resultado(caminho_ou_nome_arquivo)
+
+    @staticmethod
+    def obter_caminhos_arquivos_saida(
+        caminho_entrada: str,
+        pasta_destino: str | None = None
+    ) -> tuple[str, str, str]:
+        """Delega para a função utilitária obter_caminhos_arquivos_saida."""
+        return obter_caminhos_arquivos_saida(caminho_entrada, pasta_destino)
+
+
+def gerar_nome_base_resultado(caminho_ou_nome_arquivo: str) -> str:
+    """
+    Gera o nome base para os arquivos de resultados (PDF e Excel)
+    a partir do nome do arquivo consultado.
+
+    Regras e Exemplos:
+      - 'frota_final_8.xlsx' -> 'resultados_final_8'
+      - 'frota_ferreira_gomes.xlsx' -> 'resultados_ferreira_gomes'
+      - 'frota-final-8.xlsx' -> 'resultados-final-8'
+      - 'frota final 8.xlsx' -> 'resultados final 8'
+      - 'frota_ce.xlsx' -> 'resultados_ce'
+      - 'frota.xlsx' -> 'resultados_frota'
+      - 'ferreira_gomes.xlsx' -> 'resultados_ferreira_gomes'
+      - 'final_8.xlsx' -> 'resultados_final_8'
+      - 'resultados_final_8.xlsx' -> 'resultados_final_8'
+    """
+    if not caminho_ou_nome_arquivo:
+        return "resultados_frota"
+
+    nome_arquivo = os.path.basename(str(caminho_ou_nome_arquivo).strip())
+    nome_base, _ = os.path.splitext(nome_arquivo)
+    nome_base = nome_base.strip()
+
+    if not nome_base:
+        return "resultados_frota"
+
+    # Se já começa com 'resultados_' ou 'resultados-' ou 'resultados '
+    if re.match(r"^resultados[_\-\s]", nome_base, re.IGNORECASE):
+        return nome_base
+
+    # Se começa com 'frota' seguido de separador (_ - ou espaço)
+    padrao_frota = re.match(r"^frota([_\-\s]+)(.+)$", nome_base, re.IGNORECASE)
+    if padrao_frota:
+        sep = padrao_frota.group(1)
+        resto = padrao_frota.group(2).strip()
+        if resto:
+            return f"resultados{sep}{resto}"
+
+    # Se for exatamente 'frota'
+    if nome_base.lower() == "frota":
+        return "resultados_frota"
+
+    # Caso geral: adiciona prefixo resultados_
+    return f"resultados_{nome_base}"
+
+
+def obter_caminhos_arquivos_saida(
+    caminho_entrada: str,
+    pasta_destino: str | None = None
+) -> tuple[str, str, str]:
+    """
+    Gera as rotas completas para os arquivos de saída:
+    (caminho_excel, caminho_pdf, caminho_checkpoint)
+    baseando-se no nome da planilha que está sendo consultada.
+    """
+    nome_base = gerar_nome_base_resultado(caminho_entrada)
+    if not pasta_destino:
+        pasta_destino = os.path.dirname(os.path.abspath(caminho_entrada)) if caminho_entrada else os.getcwd()
+
+    arquivo_excel = os.path.join(pasta_destino, f"{nome_base}.xlsx")
+    arquivo_pdf = os.path.join(pasta_destino, f"{nome_base}.pdf")
+    arquivo_checkpoint = os.path.join(pasta_destino, f"~checkpoint_{nome_base}.xlsx")
+    return arquivo_excel, arquivo_pdf, arquivo_checkpoint
+
 

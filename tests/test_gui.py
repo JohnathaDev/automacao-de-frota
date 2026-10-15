@@ -102,6 +102,23 @@ class TestGUI(unittest.TestCase):
 
         janela.destroy()
 
+    def test_gui_nomenclatura_dinamica_ao_carregar(self):
+        df_frota = pd.DataFrame([{"Placa": "THS2C78", "RENAVAM": "01415443316"}])
+        resultados = {0: {"lic": "R$ 100,00", "ipva": "0"}}
+        janela = JanelaDownloadBoletos(
+            parent=self.root,
+            df_frota=df_frota,
+            col_placa="Placa",
+            col_renavam="RENAVAM",
+            resultados_memoria=resultados,
+            pasta_destino_base="temp_test_dir",
+            modo_noturno=False,
+            modo_headless=True,
+            caminho_arquivo="C:/frotas/frota_ferreira_gomes.xlsx"
+        )
+        self.assertEqual(janela.nome_frota, "ferreira_gomes")
+        janela.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()
