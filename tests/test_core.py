@@ -75,7 +75,7 @@ class TestCore(unittest.TestCase):
         self.assertEqual(cor, "#DC2626")
 
     def test_validacao_placa_e_dia_util(self):
-        self.assertTrue(bool(PADRAO_PLACA.match("THS2C78")))
+        self.assertTrue(bool(PADRAO_PLACA.match("BRA2E19")))
         self.assertTrue(bool(PADRAO_PLACA.match("ABC1234")))
         self.assertFalse(bool(PADRAO_PLACA.match("INVALIDA")))
 
@@ -103,9 +103,9 @@ class TestCore(unittest.TestCase):
 
     def test_exportacao_excel_e_pdf(self):
         df = pd.DataFrame([
-            {"Placa": "THS2C78", "RENAVAM": "01415443316", "Valor_Licenciamento": "R$ 1.267,93", "Valor_IPVA": "R$ 0,00", "Valor_Multas": "R$ 3.529,89", "Status": "Com Débitos Pendentes"},
-            {"Placa": "SBO1F58", "RENAVAM": "01353629012", "Valor_Licenciamento": "R$ 0,00", "Valor_IPVA": "R$ 1.943,68", "Valor_Multas": "R$ 0,00", "Status": "Com Débitos Pendentes"},
-            {"Placa": "TII5F89", "RENAVAM": "01458899249", "Valor_Licenciamento": "R$ 0,00", "Valor_IPVA": "R$ 0,00", "Valor_Multas": "R$ 0,00", "Status": "Sem Débitos"}
+            {"Placa": "BRA1A11", "RENAVAM": "01111111111", "Valor_Licenciamento": "R$ 1.267,93", "Valor_IPVA": "R$ 0,00", "Valor_Multas": "R$ 3.529,89", "Status": "Com Débitos Pendentes"},
+            {"Placa": "BRA2B22", "RENAVAM": "02222222222", "Valor_Licenciamento": "R$ 0,00", "Valor_IPVA": "R$ 1.943,68", "Valor_Multas": "R$ 0,00", "Status": "Com Débitos Pendentes"},
+            {"Placa": "BRA3C33", "RENAVAM": "03333333333", "Valor_Licenciamento": "R$ 0,00", "Valor_IPVA": "R$ 0,00", "Valor_Multas": "R$ 0,00", "Status": "Sem Débitos"}
         ])
 
         excel_path = os.path.join(self.temp_dir, "teste_relatorio.xlsx")
@@ -187,8 +187,8 @@ class TestCore(unittest.TestCase):
 
     def test_consolidar_resultados_com_total_a_pagar(self):
         df_original = pd.DataFrame([
-            {"Placa": "THS2C78", "RENAVAM": "01415443316"},
-            {"Placa": "SBO1F58", "RENAVAM": "01353629012"}
+            {"Placa": "BRA1A11", "RENAVAM": "01111111111"},
+            {"Placa": "BRA2B22", "RENAVAM": "02222222222"}
         ])
         lics = ["R$ 482,43", "R$ 0,00"]
         ipvas = ["R$ 0,00", "R$ 1.943,68"]
@@ -257,8 +257,8 @@ class TestCore(unittest.TestCase):
 
         # 3. Consolidar resultados com status de Restrição e PAGO
         df_in = pd.DataFrame([
-            {"Placa": "POT5I85", "RENAVAM": "01247217938"},
-            {"Placa": "THY7G95", "RENAVAM": "01450027048"},
+            {"Placa": "BRA1A11", "RENAVAM": "01111111111"},
+            {"Placa": "BRA2B22", "RENAVAM": "02222222222"},
             {"Placa": "ABC1234", "RENAVAM": "01234567890"}
         ])
         lics = ["Restrição", "PAGO", "Restrição"]
@@ -281,21 +281,21 @@ class TestCore(unittest.TestCase):
         import openpyxl
         wb = openpyxl.load_workbook(excel_path)
         ws = wb.active
-        # Linha 2 é POT5I85 (Restrição) - coluna C (Valor_Licenciamento)
+        # Linha 2 é BRA1A11 (Restrição) - coluna C (Valor_Licenciamento)
         c_restr = ws["C2"]
         self.assertEqual(c_restr.value, "Restrição")
         self.assertEqual(c_restr.fill.start_color.rgb, "00FFEDD5")
         self.assertEqual(c_restr.font.color.rgb, "009A3412")
         self.assertTrue(c_restr.font.bold)
 
-        # Linha 2 é POT5I85 - coluna D (Valor_IPVA) deve ser PAGO (verde)
+        # Linha 2 é BRA1A11 - coluna D (Valor_IPVA) deve ser PAGO (verde)
         c_ipva_pago = ws["D2"]
         self.assertEqual(c_ipva_pago.value, "PAGO")
         self.assertEqual(c_ipva_pago.fill.start_color.rgb, "00DCFCE7")
         self.assertEqual(c_ipva_pago.font.color.rgb, "00166534")
         self.assertTrue(c_ipva_pago.font.bold)
 
-        # Linha 3 é THY7G95 (PAGO) - coluna C (Valor_Licenciamento)
+        # Linha 3 é BRA2B22 (PAGO) - coluna C (Valor_Licenciamento)
         c_pago = ws["C3"]
         self.assertEqual(c_pago.value, "PAGO")
         self.assertEqual(c_pago.fill.start_color.rgb, "00DCFCE7")

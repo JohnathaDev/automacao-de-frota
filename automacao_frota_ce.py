@@ -32,12 +32,12 @@ HEADLESS_MODE = True
 ARQUIVO_ENTRADA = "frota.xlsx"
 
 DADOS_TESTE = [
-    {"Placa": "TII5F89", "RENAVAM": "01458899249"},
-    {"Placa": "THT5F69", "RENAVAM": "01458894204"},
-    {"Placa": "THU5D09", "RENAVAM": "01458895766"},
-    {"Placa": "THV0A49", "RENAVAM": "01434835143"},
-    {"Placa": "TIE8B49", "RENAVAM": "01422988322"},
-    {"Placa": "THY7G95", "RENAVAM": "01450027048"}
+    {"Placa": "BRA1A11", "RENAVAM": "01234567891"},
+    {"Placa": "BRA2B22", "RENAVAM": "01234567892"},
+    {"Placa": "BRA3C33", "RENAVAM": "01234567893"},
+    {"Placa": "BRA4D44", "RENAVAM": "01234567894"},
+    {"Placa": "BRA5E55", "RENAVAM": "01234567895"},
+    {"Placa": "BRA6F66", "RENAVAM": "01234567896"}
 ]
 
 

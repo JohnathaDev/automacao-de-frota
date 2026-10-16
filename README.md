@@ -87,17 +87,6 @@ python -m unittest discover tests
 
 ---
 
-## 📄 Estrutura da Planilha de Entrada
-
-A planilha `.xlsx` selecionada pode conter qualquer número de colunas adicionais. Ela precisa apenas possuir colunas que façam referência à placa e ao RENAVAM:
-
-| Proprietário | Placa | RENAVAM | Chassi |
-| :---: | :---: | :---: | :---: |
-| Empresa Frota Ltda | TII5F89 | 01458899249 | 9BWZZZ377VT... |
-| Empresa Frota Ltda | THU5D09 | 01458895766 | 9BWZZZ377AB... |
-
----
-
 ## 📜 Licença
 
 Distribuído sob a licença MIT.

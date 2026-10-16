@@ -43,8 +43,8 @@ class TestGUI(unittest.TestCase):
     def test_gui_filtros_pilula(self):
         app = AppConsultaFrotaGUI(self.root)
         app.df_carregado = pd.DataFrame([
-            {"Placa": "THS2C78", "RENAVAM": "01415443316"},
-            {"Placa": "SBO1F58", "RENAVAM": "01353629012"}
+            {"Placa": "BRA1A11", "RENAVAM": "01111111111"},
+            {"Placa": "BRA2B22", "RENAVAM": "02222222222"}
         ])
         app.col_placa = "Placa"
         app.col_renavam = "RENAVAM"
@@ -68,8 +68,8 @@ class TestGUI(unittest.TestCase):
 
     def test_janela_download_boletos_init(self):
         df_frota = pd.DataFrame([
-            {"Placa": "THS2C78", "RENAVAM": "01415443316"},
-            {"Placa": "SBO1F58", "RENAVAM": "01353629012"}
+            {"Placa": "BRA1A11", "RENAVAM": "01111111111"},
+            {"Placa": "BRA2B22", "RENAVAM": "02222222222"}
         ])
         resultados_memoria = {
             0: {"lic": "R$ 1.267,93", "ipva": "R$ 0,00", "multas": "R$ 0,00"},
@@ -103,7 +103,7 @@ class TestGUI(unittest.TestCase):
         janela.destroy()
 
     def test_gui_nomenclatura_dinamica_ao_carregar(self):
-        df_frota = pd.DataFrame([{"Placa": "THS2C78", "RENAVAM": "01415443316"}])
+        df_frota = pd.DataFrame([{"Placa": "BRA1A11", "RENAVAM": "01111111111"}])
         resultados = {0: {"lic": "R$ 100,00", "ipva": "0"}}
         janela = JanelaDownloadBoletos(
             parent=self.root,

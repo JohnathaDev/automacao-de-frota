@@ -300,7 +300,7 @@ class FrotaBoletoDownloader:
             self._clicar_seguro(link_lic[0])
             time.sleep(1.5)
 
-            # Caso haja débito de IPVA em aberto (ex: SBO1F58), o modal exibe o campo data_vencimento
+            # Caso haja débito de IPVA em aberto, o modal exibe o campo data_vencimento
             try:
                 campos_data = self.driver.find_elements(By.XPATH, "//input[@id='data_vencimento' or @name='data_vencimento']")
                 for cd in campos_data:

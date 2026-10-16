@@ -11,8 +11,8 @@ Independentemente de ter Python ou não, o computador que executará a automaç�
 - **Google Chrome** instalado e atualizado (o robô automatiza o navegador Chrome).
 - **Acesso à internet** (para consultar os portais governamentais do Detran-CE e Sefaz-CE).
 - **Uma planilha Excel (.xlsx)** contendo obrigatoriamente as colunas:
-  - `Placa` (ex: `TII5F89`)
-  - `RENAVAM` (ex: `01458899249`)
+  - `Placa` (ex: `ABC1D23`)
+  - `RENAVAM` (ex: `01234567890`)
 
 ---
 
@@ -104,4 +104,4 @@ automacao-de-frota/
 | **Aviso do Windows Defender ("Windows protegeu o computador")** | O executável é novo e não possui assinatura digital paga da Microsoft. | Clique em **"Mais informações"** e depois no botão **"Executar assim mesmo"**. |
 | **Erro ao abrir: "Chrome não encontrado"** | O Google Chrome não está instalado no computador de destino. | Instale o navegador Google Chrome oficial. |
 | **Erro: "Planilha deve conter as colunas Placa e RENAVAM"** | Cabeçalhos diferentes na planilha de entrada. | Verifique se a primeira linha da planilha contém exatamente `Placa` e `RENAVAM` (respeitando maiúsculas/minúsculas). |
-| **Zeros à esquerda sumindo do RENAVAM** | Excel tratando o número como numérico e não texto. | O script já faz a leitura forçada como texto (`dtype=str`), preservando zeros à esquerda (ex: `01458899249`). |
+| **Zeros à esquerda sumindo do RENAVAM** | Excel tratando o número como numérico e não texto. | O script já faz a leitura forçada como texto (`dtype=str`), preservando zeros à esquerda (ex: `01234567890`). |
