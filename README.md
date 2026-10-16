@@ -1,30 +1,24 @@
-# 🚗 Automação de Frota - Detran/Sefaz CE (Versão 3.0)
+# 🚗 Automação de Frota - Detran/Sefaz CE (Versão 4.0)
 
-Sistema corporativo de web scraping e automação veicular com Interface Gráfica nativa (GUI) e CLI para consulta em lote de débitos de **Licenciamento (Detran-CE)**, **IPVA (Sefaz-CE)** e **Multas (Detran-CE)**, além de **emissão e download automático de boletos/DAEs**.
+Sistema corporativo de web scraping e automação veicular com Interface Gráfica nativa (GUI Comercial — *Fleet Command Pro*) e CLI para consulta em lote de débitos de **Licenciamento (Detran-CE)**, **IPVA (Sefaz-CE)** e **Multas (Detran-CE)**, além de **emissão automática de boletos/DAEs** e **Business Intelligence (BI) integrado**.
 
 ---
 
-## 🌟 Novidades e Funcionalidades da Versão 3.0 Corporativa
+## 🌟 Funcionalidades da Versão 4.0
 
 - **Arquitetura Modular em Camadas (`core/`):** Estrutura limpa e escalável com módulos desacoplados para raspagem, processamento de dados, emissão de boletos, exportação de relatórios, persistência de preferências e logging estruturado.
+- **Painel Analítico de BI Integrado (Top 10):** Aba dedicada na interface gráfica com **Gráfico de Rosca (Donut Chart)** de composição tributária, **Saúde e Regularidade da Frota** e **Ranking Top 10 Veículos de Maior Impacto Financeiro**, com layout anti-colisão em tempo real.
+- **Duplo Relatório PDF Executivo (Relatório Geral + Relatório de BI):** Além da planilha Excel (`.xlsx`) e do relatório consolidado (`.pdf`), gera automaticamente um **2º PDF Executivo de BI (`*_BI.pdf`)** com gráficos vetoriais, KPIs, Top 10 veículos mais críticos e consolidação por Proprietário/Centro de Custo.
+- **Raio-X Executivo do Veículo:** Duplo clique em qualquer veículo na tabela abre o detalhamento individual completo com botão para copiar resumo formatado para WhatsApp ou E-mail.
 - **Download e Emissão Automática de Boletos (PDF):** Módulo dedicado para emissão e download direto dos boletos/DAEs de Licenciamento e IPVA, com organização automática por pastas e nomenclatura padronizada por veículo e data de vencimento.
 - **Suporte a Múltiplos Workers (Concorrência):** Processamento paralelo configurável com múltiplos navegadores em simultâneo para acelerar a consulta de grandes frotas.
 - **Mecanismo de Auto-Heal (Recuperação Automática):** Detecção proativa de congelamento ou perda de conexão do Selenium WebDriver, realizando a reinicialização automática da instância do navegador sem interromper o lote.
-- **Gerenciador de Preferências e Histórico (`config.json`):** Persistência do estado de configurações (tema, pasta padrão de destino, quantidade de workers, débitos selecionados) e histórico de arquivos recentes consultados.
-- **Logging Estruturado e Rotativo (`logs/`):** Rastreabilidade total das operações com logs diários formatados e rotação automática.
-- **Suíte de Testes Automatizados (`tests/`):** Cobertura com testes unitários para a camada core (`test_core.py`) e para a interface gráfica (`test_gui.py`).
-- **Prevenção de Falsos Negativos:** Diferenciação estrita entre veículos regulares (`R$ 0,00`) e falhas ou timeouts de comunicação (`Falha Detran` / `Falha Sefaz` / `Falha na Consulta`), evitando diagnósticos incorretos de frotas regulares.
-- **Proteção contra Arquivos Abertos (PermissionError):** Se a planilha Excel ou relatório PDF estiver aberto no Excel ou leitor no momento do salvamento, o sistema grava automaticamente com sufixo de data/hora (`_YYYYMMDD_HHMMSS`), impedindo a perda de dados.
+- **Gerenciador de Preferências e Histórico (`config.json`):** Persistência do estado de configurações (tema, pasta padrão de destino, quantidade de workers, débitos selecionados) e menu rápido de arquivos recentes.
+- **Prevenção de Falsos Negativos:** Diferenciação estrita entre veículos regulares (`R$ 0,00`) e falhas ou timeouts de comunicação (`Falha Detran` / `Falha Sefaz` / `Não Localizado`), evitando diagnósticos incorretos de frotas regulares.
+- **Proteção contra Arquivos Abertos (PermissionError):** Se a planilha Excel ou relatório PDF estiver aberto no momento do salvamento, o sistema grava automaticamente com sufixo de data/hora (`_YYYYMMDD_HHMMSS`), impedindo a perda de dados.
 - **Garantia de 11 Dígitos no RENAVAM (`zfill`):** Sanitização automática de zeros à esquerda para planilhas que salvaram o campo como número.
-- **Validação Prévia e Limpeza de Dados:** Limpeza de linhas em branco e validação de placas (Mercosul e Tradicional) via expressão regular antes do envio aos portais governamentais.
-- **Nomenclatura Dinâmica e Compatível por Frota:** O sistema analisa automaticamente o nome da planilha consultada (ex: `frota_final_8.xlsx` ou `frota_ferreira_gomes.xlsx`) e gera os arquivos de saída correspondentes (`resultados_final_8.xlsx` / `resultados_final_8.pdf` e `resultados_ferreira_gomes.xlsx` / `resultados_ferreira_gomes.pdf`), além de pastas isoladas para boletos, garantindo compatibilidade e organização para envio mesmo com múltiplas solicitações sucessivas.
-- **Salvamento Incremental (Checkpoint Dinâmico):** Gravação periódica de pontos de recuperação específicos por frota (`~checkpoint_resultados_<frota>.xlsx`) a cada 5 veículos e salvamento garantido em caso de interrupção ou cancelamento prematuro.
-- **Pasta de Destino Personalizada:** Controle visual na interface gráfica para escolher a pasta onde os arquivos de relatório e boletos serão gerados.
-- **Reconsulta Inteligente (Falhas e Selecionados):** Botão rápido e menu de contexto (clique com botão direito) para reconsultar apenas os veículos que apresentaram falhas temporárias de conexão.
-- **Sessão Unificada no Detran-CE:** Consulta combinada de Licenciamento e Multas na mesma navegação por veículo.
-- **Exportação Multiformato:** Planilha Excel executiva e Relatório PDF em layout Paisagem (A4 Landscape) com cards de indicadores e paginação dinâmica.
-- **Registro Inteligente de Quitação (PAGO):** Quando o IPVA ou Licenciamento retornam zerados (R$ 0,00) ou sem débitos em aberto, o sistema registra automaticamente como "PAGO" com destaque visual verde e sem pendências financeiras.
-- **Design Executivo Premium & Telemetria:** Dashboard com cards ornamentados via curvas Bezier no Canvas, orbe de telemetria em tempo real (*LiveStatusOrb*), barra de filtros em pílulas com contadores dinâmicos (*Todos, Com Débitos, Pagos, Restrições, Falhas*), console de logs com realce sintático e alternância instantânea entre **Modo Claro** e **Modo Noturno**.
+- **Nomenclatura Dinâmica por Frota:** Analisa automaticamente o nome da planilha consultada (ex: `frota_final_8.xlsx`) e gera os arquivos de saída correspondentes (`resultados_final_8.xlsx`, `resultados_final_8.pdf` e `resultados_final_8_BI.pdf`).
+- **Salvamento Incremental (Checkpoint Dinâmico):** Gravação periódica de pontos de recuperação específicos por frota (`~checkpoint_resultados_<frota>.xlsx`) a cada 5 veículos e salvamento garantido em caso de interrupção ou cancelamento.
 
 ---
 
@@ -32,7 +26,7 @@ Sistema corporativo de web scraping e automação veicular com Interface Gráfic
 
 ```text
 automação-de-frota/
-├── automacao_frota_gui.py    # Interface Gráfica Principal (Tkinter/ttk)
+├── automacao_frota_gui.py    # Interface Gráfica Principal v4.0 (Fleet Command Pro)
 ├── automacao_frota_gui.pyw   # Lançador sem console no Windows
 ├── automacao_frota_ce.py     # Execução via Linha de Comando (CLI)
 ├── core/                     # Pacote central de lógica de negócio
@@ -41,11 +35,8 @@ automação-de-frota/
 │   ├── config_manager.py     # Gerenciamento de configurações e histórico
 │   ├── data_processor.py     # Validação, limpeza e tratamento financeiro
 │   ├── logger_config.py      # Configuração de logs rotativos
-│   ├── relatorio_exporter.py # Exportação de relatórios (Excel e PDF Paisagem)
+│   ├── relatorio_exporter.py # Exportação de relatórios (Excel, PDF Geral e PDF BI)
 │   └── scraper_engine.py     # Motores de automação Selenium e auto-heal
-├── tests/                    # Suíte de testes automatizados
-│   ├── test_core.py          # Testes unitários do core
-│   └── test_gui.py           # Testes de integração da interface gráfica
 ├── executar_gui.bat          # Atalho para iniciar a GUI no Windows
 ├── executar_cli.bat          # Atalho para iniciar o CLI no Windows
 ├── config.example.json       # Exemplo de configurações padrão
@@ -58,11 +49,11 @@ automação-de-frota/
 
 ## 🛠️ Tecnologias Utilizadas
 
-- **Python 3.10+** (Compatível com 3.12 e 3.15)
-- **Tkinter & ttk** (Interface gráfica nativa com tema moderno)
+- **Python 3.10+** (Compatível com 3.12+)
+- **Tkinter & ttk + DWM API** (Interface gráfica nativa com Modo Claro / Noturno e gráficos em Canvas)
 - **Selenium WebDriver** & **webdriver-manager** (Automação de navegador Google Chrome)
 - **Pandas** & **Openpyxl** (Manipulação e formatação executiva de planilhas Excel)
-- **ReportLab** (Geração de relatórios PDF executivos em Paisagem)
+- **ReportLab** (Geração de relatórios PDF executivos e gráficos vetoriais de BI em Paisagem)
 - **Threading & Concorrência** (Processamento não bloqueante com múltiplos workers)
 - **PyInstaller** (Compilação para executável autônomo `.exe`)
 
@@ -79,11 +70,6 @@ Consulte o guia completo:
   ```bash
   python automacao_frota_ce.py
   ```
-
-### Executar Testes Unitários:
-```bash
-python -m unittest discover tests
-```
 
 ---
 
