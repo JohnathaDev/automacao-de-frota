@@ -3132,11 +3132,13 @@ class AppConsultaFrotaGUI:
 
             lock_memoria = threading.Lock()
             concluidos_contador = [0]
+            erros_workers = []
 
             def worker_task(worker_id: int, sub_indices: list[int]):
-                scraper = FrotaScraperEngine(headless=modo_headless)
-                scrapers_ativos.append(scraper)
+                scraper = None
                 try:
+                    scraper = FrotaScraperEngine(headless=modo_headless)
+                    scrapers_ativos.append(scraper)
                     scraper.iniciar()
                     for idx in sub_indices:
                         if self.cancelar_solicitado:
@@ -3230,8 +3232,17 @@ class AppConsultaFrotaGUI:
                         )
                         self._adicionar_log(f"[{c_atual}/{total_lote}] {placa} | Lic: {val_detran_lic} | IPVA: {val_sefaz_ipva} | Multas: {val_detran_multas}")
 
+                except Exception as exc:
+                    logger.error(f"Erro no Worker {worker_id + 1}: {exc}", exc_info=True)
+                    with lock_memoria:
+                        erros_workers.append(f"Worker {worker_id + 1}: {exc}")
+                    self._adicionar_log(f"Erro no Worker {worker_id + 1}: {exc}", nivel="ERRO")
                 finally:
-                    scraper.fechar()
+                    if scraper:
+                        try:
+                            scraper.fechar()
+                        except Exception:
+                            pass
 
             num_workers = max(1, min(num_workers, len(lista_indices)))
             sub_listas = [lista_indices[i::num_workers] for i in range(num_workers)]
@@ -3245,6 +3256,21 @@ class AppConsultaFrotaGUI:
 
             for t in threads_workers:
                 t.join()
+
+            if concluidos_contador[0] == 0:
+                if self.cancelar_solicitado:
+                    self.root.after(0, lambda: self.var_status.set("Auditoria cancelada pelo operador."))
+                    self.root.after(0, self._restaurar_botoes_apos_conclusao_ou_erro)
+                    return
+                detalhe = "\n".join(erros_workers) if erros_workers else "Nenhum veículo pôde ser consultado (verifique os logs)."
+                self._adicionar_log(f"Falha na auditoria: nenhum veículo consultado. Detalhes:\n{detalhe}", nivel="ERRO")
+                self.root.after(0, lambda: self.var_status.set("Falha na auditoria. Verifique a aba de logs."))
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Falha na Auditoria",
+                    f"Nenhum veículo pôde ser auditado!\n\nMotivo:\n{detalhe}\n\nConsulte a aba 'Logs de Operação' para mais detalhes."
+                ))
+                self.root.after(0, self._restaurar_botoes_apos_conclusao_ou_erro)
+                return
 
             self.root.after(0, lambda: self.var_status.set("Consolidando dados e gerando relatórios..."))
 
@@ -3340,16 +3366,22 @@ class AppConsultaFrotaGUI:
                 self._finalizar_processamento_ui,
                 caminho_excel_gerado,
                 caminho_pdf_gerado,
-                self.cancelar_solicitado
+                self.cancelar_solicitado,
+                concluidos_contador[0],
+                total_lote
             )
 
         except Exception as e:
-            logger.error(f"Erro durante o processamento da frota: {e}")
+            logger.error(f"Erro durante o processamento da frota: {e}", exc_info=True)
             self.root.after(0, lambda: messagebox.showerror("Erro de Processamento", f"Ocorreu uma falha no processamento:\n\n{e}"))
             self.root.after(0, lambda: self.var_status.set("Erro durante o processamento. Verifique a aba de logs."))
+            self.root.after(0, self._restaurar_botoes_apos_conclusao_ou_erro)
         finally:
             for sc in scrapers_ativos:
-                sc.fechar()
+                try:
+                    sc.fechar()
+                except Exception:
+                    pass
             self.is_executando = False
             self.is_pausado = False
 
@@ -3444,7 +3476,20 @@ class AppConsultaFrotaGUI:
         if self.status_orb and self.is_executando:
             self.status_orb.definir_status("processando", f"AUDITANDO: #{index + 1} / {total_geral}")
 
-    def _finalizar_processamento_ui(self, arq_excel: str, arq_pdf: str, foi_cancelado: bool):
+    def _restaurar_botoes_apos_conclusao_ou_erro(self):
+        """Restaura o estado dos botões da interface após cancelamento ou falha."""
+        self.btn_iniciar.config(state="normal")
+        self.btn_selecionar.config(state="normal")
+        self.btn_pasta_destino.config(state="normal")
+        self.btn_cancelar.config(state="disabled")
+        self.btn_pausar.config(state="disabled", text="⏸️ Pausar")
+        self.btn_abrir_pasta.config(state="normal")
+        if self.indices_em_falha:
+            self.btn_reconsultar_falhas.config(state="normal")
+        if self.status_orb:
+            self.status_orb.definir_status("pronto", "PRONTO")
+
+    def _finalizar_processamento_ui(self, arq_excel: str, arq_pdf: str, foi_cancelado: bool, concluidos: int = 0, total_lote: int = 0):
         self.barra_progresso["value"] = 100
         self.btn_iniciar.config(state="normal")
         self.btn_selecionar.config(state="normal")
@@ -3487,10 +3532,14 @@ class AppConsultaFrotaGUI:
 
         if foi_cancelado:
             self.var_status.set("Processamento interrompido. Resultados parciais salvos.")
-            messagebox.showinfo("Interrompido", "O processamento foi interrompido e os veículos concluídos foram gravados com sucesso.")
+            messagebox.showinfo("Interrompido", f"O processamento foi interrompido e os {concluidos} veículos concluídos foram gravados com sucesso.")
         else:
-            self.var_status.set("Processamento concluído com sucesso!")
-            msg = f"Consultas concluídas com sucesso!\n\nTotal a Pagar na Frota: {self.var_metricas_total.get()}"
+            if total_lote > 0 and concluidos < total_lote:
+                self.var_status.set(f"Processamento parcial: {concluidos}/{total_lote} veículos concluídos.")
+                msg = f"Consultas parcialmente concluídas ({concluidos}/{total_lote} veículos)!\n\nTotal a Pagar na Frota: {self.var_metricas_total.get()}"
+            else:
+                self.var_status.set("Processamento concluído com sucesso!")
+                msg = f"Consultas concluídas com sucesso!\n\nTotal a Pagar na Frota: {self.var_metricas_total.get()}"
             if arq_excel and os.path.exists(arq_excel):
                 msg += f"\n\n📊 Planilha Excel: {os.path.basename(arq_excel)}"
             if arq_pdf and os.path.exists(arq_pdf):

@@ -14,6 +14,7 @@ import shutil
 import subprocess
 from datetime import datetime
 from selenium import webdriver
+from selenium.webdriver.chrome.webdriver import WebDriver as ChromeDriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -78,11 +79,12 @@ class FrotaBoletoDownloader:
         }
         chrome_options.add_experimental_option("prefs", prefs)
 
-        service = Service(obter_caminho_chromedriver())
+        caminho_driver = obter_caminho_chromedriver()
+        service = Service(executable_path=caminho_driver) if (caminho_driver and os.path.exists(caminho_driver)) else Service()
         if sys.platform == "win32":
             service.creation_flags = subprocess.CREATE_NO_WINDOW
 
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        self.driver = ChromeDriver(service=service, options=chrome_options)
         self.wait = WebDriverWait(self.driver, 15)
         logger.info(f"Downloader de Boletos inicializado. Pasta de destino: {self.pasta_destino_final}")
 

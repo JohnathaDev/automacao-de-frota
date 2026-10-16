@@ -6,9 +6,12 @@ e sessão unificada de consulta.
 import os
 import sys
 import time
+import shutil
+import tempfile
 import threading
 import subprocess
 from selenium import webdriver
+from selenium.webdriver.chrome.webdriver import WebDriver as ChromeDriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -26,13 +29,42 @@ _CHROMEDRIVER_LOCK = threading.Lock()
 _CHROMEDRIVER_PATH: str | None = None
 
 
-def obter_caminho_chromedriver() -> str:
-    """Resolve e faz cache do caminho do ChromeDriver de forma thread-safe para múltiplos workers."""
+def obter_caminho_chromedriver() -> str | None:
+    """Resolve e faz cache do caminho do ChromeDriver de forma thread-safe com múltiplos fallbacks."""
     global _CHROMEDRIVER_PATH
     with _CHROMEDRIVER_LOCK:
-        if not _CHROMEDRIVER_PATH or not os.path.exists(_CHROMEDRIVER_PATH):
-            _CHROMEDRIVER_PATH = ChromeDriverManager().install()
-        return _CHROMEDRIVER_PATH
+        if _CHROMEDRIVER_PATH and os.path.exists(_CHROMEDRIVER_PATH):
+            return _CHROMEDRIVER_PATH
+
+        user_home = os.path.expanduser("~")
+        caminhos_conhecidos = [
+            os.path.join(user_home, r".cache\selenium\chromedriver\win64\155.0.8059.84\chromedriver.exe"),
+            os.path.join(user_home, r".wdm\drivers\chromedriver\win64\155.0.8059.84\chromedriver-win64\chromedriver.exe"),
+            os.path.join(os.path.dirname(sys.executable), "chromedriver.exe"),
+            os.path.join(os.getcwd(), "chromedriver.exe")
+        ]
+        for c in caminhos_conhecidos:
+            if os.path.exists(c):
+                _CHROMEDRIVER_PATH = os.path.normpath(c)
+                logger.info(f"ChromeDriver localizado no cache do sistema: {_CHROMEDRIVER_PATH}")
+                return _CHROMEDRIVER_PATH
+
+        # 2. Tenta download/resolução via ChromeDriverManager
+        try:
+            p = ChromeDriverManager().install()
+            if p and os.path.exists(p):
+                if not p.endswith(".exe"):
+                    p_dir = os.path.dirname(p)
+                    exe_cand = os.path.join(p_dir, "chromedriver.exe")
+                    if os.path.exists(exe_cand):
+                        p = exe_cand
+                _CHROMEDRIVER_PATH = os.path.normpath(p)
+                return _CHROMEDRIVER_PATH
+        except Exception as e_wdm:
+            logger.warning(f"ChromeDriverManager falhou ({e_wdm}). Delegando para o Selenium Manager nativo...")
+
+        # 3. Retorna None para deixar o Selenium 4 usar seu Selenium Manager nativo integrado
+        return None
 
 
 class DetranResultado(tuple):
@@ -60,8 +92,9 @@ class FrotaScraperEngine:
 
     def __init__(self, headless: bool = True):
         self.headless = headless
-        self.driver: webdriver.Chrome | None = None
+        self.driver: ChromeDriver | None = None
         self.wait: WebDriverWait | None = None
+        self.temp_user_data_dir: str | None = None
 
     def iniciar(self):
         """Inicializa o WebDriver com configurações silenciosas e robustas."""
@@ -80,19 +113,27 @@ class FrotaScraperEngine:
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
 
+        # Perfil temporário isolado por worker para evitar conflitos de sessão/concorrência
+        try:
+            self.temp_user_data_dir = tempfile.mkdtemp(prefix="chrome_worker_")
+            chrome_options.add_argument(f"--user-data-dir={self.temp_user_data_dir}")
+        except Exception:
+            self.temp_user_data_dir = None
+
         os.environ["WDM_LOG"] = "0"
         os.environ["WDM_LOG_LEVEL"] = "0"
 
-        service = Service(obter_caminho_chromedriver())
+        caminho_driver = obter_caminho_chromedriver()
+        service = Service(executable_path=caminho_driver) if (caminho_driver and os.path.exists(caminho_driver)) else Service()
         if sys.platform == "win32":
             service.creation_flags = subprocess.CREATE_NO_WINDOW
 
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        self.driver = ChromeDriver(service=service, options=chrome_options)
         self.wait = WebDriverWait(self.driver, 15)
         logger.info(f"Instância do ChromeDriver iniciada com sucesso (Headless={self.headless}).")
 
     def fechar(self):
-        """Encerra a instância do navegador de forma segura."""
+        """Encerra a instância do navegador e limpa perfil temporário de forma segura."""
         if self.driver:
             try:
                 self.driver.quit()
@@ -101,6 +142,13 @@ class FrotaScraperEngine:
             self.driver = None
             self.wait = None
             logger.info("Instância do ChromeDriver encerrada.")
+
+        if self.temp_user_data_dir and os.path.exists(self.temp_user_data_dir):
+            try:
+                shutil.rmtree(self.temp_user_data_dir, ignore_errors=True)
+            except Exception:
+                pass
+            self.temp_user_data_dir = None
 
     def reiniciar(self):
         """Auto-heal: reinicia a instância do navegador após crash ou travamento."""
