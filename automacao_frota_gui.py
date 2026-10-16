@@ -791,7 +791,7 @@ class JanelaDownloadBoletos(tk.Toplevel):
             messagebox.showinfo("Cancelado", f"Processamento interrompido.\n\nForam salvos {sucessos} de {total} boletos selecionados.")
         else:
             self.var_progresso_txt.set(f"🎉 Todos os downloads foram concluídos com sucesso! ({sucessos}/{total})")
-            if sys.platform == "win32":
+            if sys.platform == "win32" and ConfigManager.carregar().get("som_notificacao", True):
                 try:
                     import winsound
                     winsound.MessageBeep(winsound.MB_ICONASTERISK)
@@ -850,6 +850,7 @@ class AppConsultaFrotaGUI:
         self.pasta_destino_var = tk.StringVar(value=self.cfg.get("pasta_destino", ""))
         self.arquivo_excel_gerado = ""
         self.arquivo_pdf_gerado = ""
+        self.arquivo_pdf_bi_gerado = ""
 
         # Filtros de Débito
         self.var_ipva = tk.BooleanVar(value=self.cfg.get("consultar_ipva", True))
@@ -1388,6 +1389,15 @@ class AppConsultaFrotaGUI:
         )
         self.btn_abrir_pdf.pack(side=tk.LEFT, padx=(0, 4))
 
+        self.btn_abrir_pdf_bi = ttk.Button(
+            frame_botoes_finais,
+            text="📈 Relatório BI (PDF)",
+            style="Secondary.TButton",
+            state="disabled",
+            command=self._abrir_pdf_bi_gerado
+        )
+        self.btn_abrir_pdf_bi.pack(side=tk.LEFT, padx=(0, 4))
+
         self.btn_abrir_pasta = ttk.Button(
             frame_botoes_finais,
             text="📂 Pasta Destino",
@@ -1562,8 +1572,18 @@ class AppConsultaFrotaGUI:
             if self.status_orb:
                 self.status_orb.definir_status("processando", "RETOMANDO CONSULTAS...")
 
+    @staticmethod
+    def _possui_indicador_falha(*valores: str) -> bool:
+        """Verifica de forma unificada com o Core se algum valor indica falha, timeout ou veículo não localizado."""
+        termos = ("falha", "erro", "timeout", "inválid", "invalid", "não localizado", "nao localizado")
+        return any(
+            termo in str(v).lower()
+            for v in valores
+            for termo in termos
+        )
+
     def _adicionar_log(self, mensagem: str, nivel: str = "INFO"):
-        """Exibe logs com realce sintático de cores e marcas de tempo."""
+        """Exibe logs com realce sintático de cores e marcas de tempo de forma thread-safe."""
         logger.info(f"[{nivel}] {mensagem}")
         hora = datetime.now().strftime("%H:%M:%S")
 
@@ -1575,10 +1595,23 @@ class AppConsultaFrotaGUI:
         elif "ERRO" in nivel.upper():
             tag_nivel = "tag_erro"
 
-        self.txt_logs.insert(tk.END, f"[{hora}] ", ("tag_time",))
-        self.txt_logs.insert(tk.END, f"[{nivel}] ", (tag_nivel,))
-        self.txt_logs.insert(tk.END, f"{mensagem}\n", ("tag_corpo",))
-        self.txt_logs.see(tk.END)
+        def _inserir_no_widget():
+            try:
+                if hasattr(self, "txt_logs") and self.txt_logs.winfo_exists():
+                    self.txt_logs.insert(tk.END, f"[{hora}] ", ("tag_time",))
+                    self.txt_logs.insert(tk.END, f"[{nivel}] ", (tag_nivel,))
+                    self.txt_logs.insert(tk.END, f"{mensagem}\n", ("tag_corpo",))
+                    self.txt_logs.see(tk.END)
+            except Exception:
+                pass
+
+        if threading.current_thread() is threading.main_thread():
+            _inserir_no_widget()
+        else:
+            try:
+                self.root.after(0, _inserir_no_widget)
+            except Exception:
+                pass
 
     def _definir_filtro_pílula(self, tipo: str):
         self.filtro_ativo = tipo
@@ -1601,7 +1634,9 @@ class AppConsultaFrotaGUI:
             ipva = dados.get("ipva", "-")
             multas = dados.get("multas", "-")
             m_av = dados.get("multas_a_vencer")
-            tem_falha = any("falha" in str(v).lower() or "erro" in str(v).lower() for v in [lic, ipva, multas])
+            if all(str(v).strip() in ["-", "N/A", "Não Consultado", ""] for v in [lic, ipva, multas]):
+                continue
+            tem_falha = self._possui_indicador_falha(lic, ipva, multas)
             if tem_falha:
                 continue
 
@@ -1750,7 +1785,7 @@ class AppConsultaFrotaGUI:
                 ipva = dados_mem.get("ipva", "-")
                 multas = dados_mem.get("multas", "-")
                 m_av = dados_mem.get("multas_a_vencer")
-                tem_falha = any("falha" in str(v).lower() or "erro" in str(v).lower() for v in [lic, ipva, multas])
+                tem_falha = self._possui_indicador_falha(lic, ipva, multas)
                 total_real = calcular_total_a_pagar_veiculo(lic, ipva, multas, m_av)
                 is_restr = "restriç" in str(lic).lower() or "restric" in str(lic).lower()
                 is_pago = (str(lic).strip().upper() == "PAGO" or str(ipva).strip().upper() == "PAGO")
@@ -1806,9 +1841,11 @@ class AppConsultaFrotaGUI:
         """Ordena a Treeview dinamicamente pelo cabeçalho clicado (crescente/decrescente)."""
         itens = [(self.tree.set(k, col), k) for k in self.tree.get_children("")]
 
-        # Detecta se é coluna de moeda ou numérica
-        if col in ["licenciamento", "ipva", "multas", "total_pagar", "num"]:
-            itens.sort(key=lambda t: formatar_moeda_float(t[0]), reverse=self.ordem_reversa)
+        # Detecta se é coluna numérica de índice ou de moeda
+        if col == "num":
+            itens.sort(key=lambda t: int(t[0]) if str(t[0]).isdigit() else 0, reverse=self.ordem_reversa)
+        elif col in ["licenciamento", "ipva", "multas", "total_pagar"]:
+            itens.sort(key=lambda t: (formatar_moeda_float(t[0]), str(t[0]).upper()), reverse=self.ordem_reversa)
         else:
             itens.sort(key=lambda t: t[0].upper(), reverse=self.ordem_reversa)
 
@@ -1830,16 +1867,17 @@ class AppConsultaFrotaGUI:
         self._disparar_raspagem(indices_alvo=indices)
 
     def _reconsultar_apenas_falhas(self):
-        indices_falhas = []
+        indices_falhas = list(self.indices_em_falha)
         for item_id in self.tree.get_children():
             tags = self.tree.item(item_id, "tags")
-            if "falha" in tags:
+            if "falha" in tags and int(item_id) not in indices_falhas:
                 indices_falhas.append(int(item_id))
 
         if not indices_falhas:
             messagebox.showinfo("Nenhuma Falha", "Não há veículos com status de falha na tabela.")
             return
 
+        indices_falhas.sort()
         self._disparar_raspagem(indices_alvo=indices_falhas)
 
     def _disparar_raspagem(self, indices_alvo: list[int] | None = None):
@@ -1880,6 +1918,8 @@ class AppConsultaFrotaGUI:
         self.btn_cancelar.config(state="normal")
         self.btn_abrir_excel.config(state="disabled")
         self.btn_abrir_pdf.config(state="disabled")
+        if hasattr(self, "btn_abrir_pdf_bi"):
+            self.btn_abrir_pdf_bi.config(state="disabled")
         self.btn_abrir_pasta.config(state="disabled")
         self.barra_progresso["value"] = 0
 
@@ -1940,6 +1980,7 @@ class AppConsultaFrotaGUI:
         arquivo_excel, arquivo_pdf, chk_path = FrotaDataProcessor.obter_caminhos_arquivos_saida(
             caminho_arquivo, pasta_destino
         )
+        arquivo_pdf_bi = FrotaDataProcessor.obter_caminho_pdf_bi(caminho_arquivo, pasta_destino)
         nome_frota_log = FrotaDataProcessor.gerar_nome_base_resultado(caminho_arquivo)
 
         scrapers_ativos = []
@@ -1982,23 +2023,31 @@ class AppConsultaFrotaGUI:
                         multas_vencidas = "R$ 0,00"
                         val_sefaz_ipva = "-"
 
-                        if consultar_lic or consultar_multas:
-                            res_detran = scraper.consultar_detran(
-                                placa, renavam, consultar_lic, consultar_multas
-                            )
-                            val_detran_lic = res_detran[0]
-                            if str(val_detran_lic).strip() in ["R$ 0,00", "0,00"]:
-                                val_detran_lic = "PAGO"
-                            val_detran_multas = res_detran[1]
-                            multas_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
-                            multas_vencidas = getattr(res_detran, "multas_vencidas", "R$ 0,00")
-                            time.sleep(0.3)
+                        if not PADRAO_PLACA.match(placa):
+                            if consultar_lic:
+                                val_detran_lic = "Placa Inválida"
+                            if consultar_multas:
+                                val_detran_multas = "Placa Inválida"
+                            if consultar_ipva:
+                                val_sefaz_ipva = "Placa Inválida"
+                        else:
+                            if consultar_lic or consultar_multas:
+                                res_detran = scraper.consultar_detran(
+                                    placa, renavam, consultar_lic, consultar_multas
+                                )
+                                val_detran_lic = res_detran[0]
+                                if str(val_detran_lic).strip() in ["R$ 0,00", "0,00"]:
+                                    val_detran_lic = "PAGO"
+                                val_detran_multas = res_detran[1]
+                                multas_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
+                                multas_vencidas = getattr(res_detran, "multas_vencidas", "R$ 0,00")
+                                time.sleep(0.3)
 
-                        if consultar_ipva:
-                            val_sefaz_ipva = scraper.consultar_sefaz_ipva(placa, renavam)
-                            if str(val_sefaz_ipva).strip() in ["R$ 0,00", "0,00"]:
-                                val_sefaz_ipva = "PAGO"
-                            time.sleep(0.3)
+                            if consultar_ipva:
+                                val_sefaz_ipva = scraper.consultar_sefaz_ipva(placa, renavam)
+                                if str(val_sefaz_ipva).strip() in ["R$ 0,00", "0,00"]:
+                                    val_sefaz_ipva = "PAGO"
+                                time.sleep(0.3)
 
                         with lock_memoria:
                             self.resultados_memoria[idx] = {
@@ -2027,6 +2076,9 @@ class AppConsultaFrotaGUI:
                             )
                             pct = int((c_atual / total_lote) * 100)
 
+                            if c_atual % 5 == 0:
+                                self._salvar_checkpoint(pasta_destino, df, caminho_arquivo)
+
                         self.root.after(0, lambda p=c_atual, t=total_lote, plc=placa, pc=pct: self._atualizar_progresso_ui(p, t, plc, pc))
                         self.root.after(
                             0,
@@ -2044,9 +2096,6 @@ class AppConsultaFrotaGUI:
                             total_acumulado
                         )
                         self._adicionar_log(f"[{c_atual}/{total_lote}] {placa} | Lic: {val_detran_lic} | IPVA: {val_sefaz_ipva} | Multas: {val_detran_multas}")
-
-                        if c_atual % 5 == 0:
-                            self._salvar_checkpoint(pasta_destino, df, caminho_arquivo)
 
                 finally:
                     scraper.fechar()
@@ -2099,6 +2148,7 @@ class AppConsultaFrotaGUI:
 
             caminho_excel_gerado = ""
             caminho_pdf_gerado = ""
+            caminho_pdf_bi_gerado = ""
 
             filtros_ativos = []
             if consultar_ipva: filtros_ativos.append("IPVA")
@@ -2118,6 +2168,12 @@ class AppConsultaFrotaGUI:
                 )
                 self.arquivo_pdf_gerado = caminho_pdf_gerado
                 self._adicionar_log(f"Relatório PDF gerado com sucesso: {os.path.basename(caminho_pdf_gerado)}")
+
+                caminho_pdf_bi_gerado = FrotaRelatorioExporter.exportar_pdf_bi(
+                    df_final, arquivo_pdf_bi, totais_dict, filtros_ativos, identificador_frota=identificador_frota
+                )
+                self.arquivo_pdf_bi_gerado = caminho_pdf_bi_gerado
+                self._adicionar_log(f"Relatório PDF BI gerado com sucesso: {os.path.basename(caminho_pdf_bi_gerado)}")
 
             # Remove checkpoint temporário se tudo correu normalmente
             if os.path.exists(chk_path):
@@ -2172,7 +2228,7 @@ class AppConsultaFrotaGUI:
 
         total_veiculo = calcular_total_a_pagar_veiculo(lic, ipva, multas, multas_a_vencer)
         total_veiculo_str = formatar_float_moeda(total_veiculo)
-        tem_falha = any("falha" in str(v).lower() or "erro" in str(v).lower() for v in [lic, ipva, multas])
+        tem_falha = self._possui_indicador_falha(lic, ipva, multas)
         is_restricao = "restriç" in str(lic).lower() or "restric" in str(lic).lower()
         is_pago = (str(lic).strip().upper() == "PAGO" or str(ipva).strip().upper() == "PAGO")
 
@@ -2211,6 +2267,8 @@ class AppConsultaFrotaGUI:
                 values=(index + 1, placa, renavam, lic, ipva, multas, total_veiculo_str, situacao),
                 tags=(zebra, tag)
             )
+        if self.filtro_ativo != "TODOS" or self.var_busca.get().strip():
+            self._filtrar_tabela()
 
         self.var_metricas_veiculos.set(f"{qtd_concluidos} / {total_geral}")
         self.var_metricas_lic.set(formatar_float_moeda(soma_lic))
@@ -2235,6 +2293,8 @@ class AppConsultaFrotaGUI:
             self.btn_abrir_excel.config(state="normal")
         if arq_pdf and os.path.exists(arq_pdf):
             self.btn_abrir_pdf.config(state="normal")
+        if self.arquivo_pdf_bi_gerado and os.path.exists(self.arquivo_pdf_bi_gerado) and hasattr(self, "btn_abrir_pdf_bi"):
+            self.btn_abrir_pdf_bi.config(state="normal")
 
         if self.indices_em_falha:
             self.btn_reconsultar_falhas.config(state="normal")
@@ -2250,7 +2310,7 @@ class AppConsultaFrotaGUI:
                 self.btn_boletos_tabela.config(state="normal")
 
         # Notificação Sonora no Windows
-        if sys.platform == "win32":
+        if sys.platform == "win32" and self.cfg.get("som_notificacao", True):
             try:
                 import winsound
                 winsound.MessageBeep(winsound.MB_ICONASTERISK)
@@ -2273,13 +2333,15 @@ class AppConsultaFrotaGUI:
                 msg += f"\n\n📊 Planilha Excel: {os.path.basename(arq_excel)}"
             if arq_pdf and os.path.exists(arq_pdf):
                 msg += f"\n📑 Relatório PDF: {os.path.basename(arq_pdf)}"
+            if self.arquivo_pdf_bi_gerado and os.path.exists(self.arquivo_pdf_bi_gerado):
+                msg += f"\n📈 Relatório BI PDF: {os.path.basename(self.arquivo_pdf_bi_gerado)}"
             if total_com_debitos > 0:
                 msg += f"\n\n💡 {total_com_debitos} veículo(s) possuem débitos de Licenciamento ou IPVA.\nVocê pode usar o botão 'Baixar Boletos' abaixo para emitir os PDFs."
             messagebox.showinfo("Sucesso", msg)
 
     def _abrir_central_download_boletos(self):
         """Abre a Janela Modal de Download de Boletos para os veículos com débitos de Licenciamento e IPVA."""
-        if not self.df_carregado is not None or not self.resultados_memoria:
+        if self.df_carregado is None or not self.resultados_memoria:
             messagebox.showwarning("Aviso", "Realize uma consulta de frota antes de baixar boletos.")
             return
 
@@ -2304,6 +2366,10 @@ class AppConsultaFrotaGUI:
     def _abrir_pdf_gerado(self):
         if self.arquivo_pdf_gerado and os.path.exists(self.arquivo_pdf_gerado):
             os.startfile(self.arquivo_pdf_gerado)
+
+    def _abrir_pdf_bi_gerado(self):
+        if self.arquivo_pdf_bi_gerado and os.path.exists(self.arquivo_pdf_bi_gerado):
+            os.startfile(self.arquivo_pdf_bi_gerado)
 
     def _abrir_pasta_destino(self):
         pasta = self.pasta_destino_var.get().strip()

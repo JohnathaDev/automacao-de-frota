@@ -103,5 +103,5 @@ automacao-de-frota/
 | :--- | :--- | :--- |
 | **Aviso do Windows Defender ("Windows protegeu o computador")** | O executável é novo e não possui assinatura digital paga da Microsoft. | Clique em **"Mais informações"** e depois no botão **"Executar assim mesmo"**. |
 | **Erro ao abrir: "Chrome não encontrado"** | O Google Chrome não está instalado no computador de destino. | Instale o navegador Google Chrome oficial. |
-| **Erro: "Planilha deve conter as colunas Placa e RENAVAM"** | Cabeçalhos diferentes na planilha de entrada. | Verifique se a primeira linha da planilha contém exatamente `Placa` e `RENAVAM` (respeitando maiúsculas/minúsculas). |
-| **Zeros à esquerda sumindo do RENAVAM** | Excel tratando o número como numérico e não texto. | O script já faz a leitura forçada como texto (`dtype=str`), preservando zeros à esquerda (ex: `01234567890`). |
+| **Erro de colunas obrigatórias ausentes** | Cabeçalhos ausentes na planilha de entrada. | Certifique-se de que a primeira linha da planilha contenha colunas identificáveis para `Placa` e `RENAVAM` (aceita maiúsculas/minúsculas e variações como `RENAVAN` ou `RNV`). |
+| **Zeros à esquerda sumindo do RENAVAM** | Excel tratando o número como numérico e não texto. | O script já faz a leitura forçada como texto (`dtype=str`) e aplica `zfill(11)`, preservando zeros à esquerda (ex: `01234567890`). |

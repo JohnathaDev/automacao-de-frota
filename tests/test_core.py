@@ -18,7 +18,8 @@ from core.data_processor import (
     obter_proximo_dia_util,
     PADRAO_PLACA,
     gerar_nome_base_resultado,
-    obter_caminhos_arquivos_saida
+    obter_caminhos_arquivos_saida,
+    obter_caminho_pdf_bi
 )
 from core.scraper_engine import DetranResultado
 from core.relatorio_exporter import FrotaRelatorioExporter
@@ -37,10 +38,12 @@ class TestCore(unittest.TestCase):
 
     def test_formatacao_moeda(self):
         self.assertEqual(formatar_moeda_float("R$ 188,96"), 188.96)
+        self.assertEqual(formatar_moeda_float("188.96"), 188.96)
         self.assertEqual(formatar_moeda_float("1.234,56"), 1234.56)
         self.assertEqual(formatar_moeda_float("R$ 0,00"), 0.0)
         self.assertEqual(formatar_moeda_float("-"), 0.0)
         self.assertEqual(formatar_moeda_float("Falha Detran"), 0.0)
+        self.assertEqual(formatar_moeda_float("Não Localizado"), 0.0)
 
         self.assertEqual(formatar_float_moeda(188.96), "R$ 188,96")
         self.assertEqual(formatar_float_moeda(1234.56), "R$ 1.234,56")
@@ -346,6 +349,107 @@ class TestCore(unittest.TestCase):
         dl = FrotaBoletoDownloader(self.temp_dir, headless=True, nome_frota="final_8")
         self.assertIn("final_8", dl.nome_pasta_boletos)
         self.assertIn("Licenciamento-IPVA", dl.nome_pasta_boletos)
+
+    def test_consolidar_nao_consultado_em_cancelamento_parcial(self):
+        df_in = pd.DataFrame([
+            {"Placa": "BRA1A11", "RENAVAM": "01111111111"},
+            {"Placa": "BRA2B22", "RENAVAM": "02222222222"}
+        ])
+        df_out = FrotaDataProcessor.consolidar_resultados(
+            df_in,
+            resultados_lic=["R$ 188,96", "-"],
+            resultados_ipva=["PAGO", "-"],
+            resultados_multas=["R$ 0,00", "-"],
+            qtd_processada=2
+        )
+        self.assertEqual(df_out.loc[0, "Status"], "Com Débitos Pendentes")
+        self.assertEqual(df_out.loc[0, "Total_a_Pagar"], "R$ 188,96")
+        self.assertEqual(df_out.loc[1, "Status"], "Não Consultado")
+        self.assertEqual(df_out.loc[1, "Total_a_Pagar"], "-")
+
+    def test_planilhas_reais_pasta_e_paridade_resultados(self):
+        planilhas_esperadas = [
+            ("frota.xlsx", 6, "resultados_frota"),
+            ("frota_alexco.xlsx", 86, "resultados_alexco"),
+            ("frota_ferreira_gomes.xlsx", 36, "resultados_ferreira_gomes"),
+            ("frota_final_8.xlsx", 39, "resultados_final_8")
+        ]
+        for arq, qtd_esperada, nome_saida_esp in planilhas_esperadas:
+            if os.path.exists(arq):
+                df, col_p, col_r = FrotaDataProcessor.carregar_planilha(arq)
+                self.assertEqual(len(df), qtd_esperada)
+                self.assertEqual(gerar_nome_base_resultado(arq), nome_saida_esp)
+                for _, row in df.iterrows():
+                    self.assertTrue(bool(PADRAO_PLACA.match(str(row[col_p]))))
+                    self.assertEqual(len(str(row[col_r])), 11)
+                    self.assertTrue(str(row[col_r]).isdigit())
+
+        # Verifica paridade com resultados_frota_ce.xlsx
+        if os.path.exists("resultados_frota_ce.xlsx") and os.path.exists("frota_final_8.xlsx"):
+            df_res = pd.read_excel("resultados_frota_ce.xlsx", dtype=str)
+            df_in, _, _ = FrotaDataProcessor.carregar_planilha("frota_final_8.xlsx")
+            lics = list(df_res["Valor_Licenciamento"])
+            ipvas = list(df_res["Valor_IPVA"])
+            multas = list(df_res["Valor_Multas"])
+            df_calc = FrotaDataProcessor.consolidar_resultados(df_in, lics, ipvas, multas, len(df_in))
+            self.assertEqual(list(df_calc["Status"]), list(df_res["Status"]))
+            self.assertEqual(list(df_calc["Valor_Licenciamento"]), list(df_res["Valor_Licenciamento"]))
+            self.assertEqual(list(df_calc["Valor_IPVA"]), list(df_res["Valor_IPVA"]))
+            self.assertEqual(list(df_calc["Valor_Multas"]), list(df_res["Valor_Multas"]))
+
+    def test_exportacao_pdf_bi_executivo(self):
+        # 1. Verifica nomenclatura do 2º PDF (_BI.pdf)
+        caminho_bi = FrotaDataProcessor.obter_caminho_pdf_bi(
+            "C:/frotas/frota_ferreira_gomes.xlsx",
+            pasta_destino=self.temp_dir
+        )
+        self.assertEqual(os.path.basename(caminho_bi), "resultados_ferreira_gomes_BI.pdf")
+        self.assertEqual(os.path.dirname(caminho_bi), self.temp_dir)
+        self.assertEqual(obter_caminho_pdf_bi("frota_final_8.xlsx", self.temp_dir), os.path.join(self.temp_dir, "resultados_final_8_BI.pdf"))
+
+        # 2. Testa geração do PDF BI com 12 veículos (para validar Top 10 e Consolidação por Proprietário)
+        registros = []
+        for idx in range(1, 13):
+            registros.append({
+                "PROPRIETÁRIO": "EMPRESA ALFA LTDA" if idx % 2 == 0 else "LOCADORA BETA S/A",
+                "Placa": f"BRA{idx % 9}A{idx:02d}",
+                "RENAVAM": f"{idx:011d}",
+                "Valor_Licenciamento": f"R$ {188.96 + idx * 50:.2f}".replace(".", ","),
+                "Valor_IPVA": f"R$ {idx * 120:.2f}".replace(".", ",") if idx % 3 != 0 else "PAGO",
+                "Valor_Multas": f"R$ {idx * 80:.2f}".replace(".", ",") if idx % 2 == 0 else "R$ 0,00",
+                "Total_a_Pagar": f"R$ {188.96 + idx * 250:.2f}".replace(".", ","),
+                "Status": "Com Débitos Pendentes" if idx < 11 else "Sem Débitos",
+            })
+        df_bi = pd.DataFrame(registros)
+        totais = {
+            "lic": "R$ 6.167,52",
+            "ipva": "R$ 6.480,00",
+            "multas": "R$ 3.360,00",
+            "total": "R$ 16.007,52"
+        }
+        arq_gerado = FrotaRelatorioExporter.exportar_pdf_bi(
+            df_bi,
+            caminho_bi,
+            totais,
+            ["IPVA (Sefaz)", "Licenciamento (Detran)", "Multas (Detran)"],
+            identificador_frota="ferreira_gomes"
+        )
+        self.assertTrue(os.path.exists(arq_gerado))
+        self.assertGreater(os.path.getsize(arq_gerado), 2500)
+
+        # 3. Testa geração do PDF BI a partir da planilha real resultados_frota_ce.xlsx
+        if os.path.exists("resultados_frota_ce.xlsx"):
+            df_real = pd.read_excel("resultados_frota_ce.xlsx", dtype=str)
+            caminho_real_bi = os.path.join(self.temp_dir, "resultados_frota_ce_BI.pdf")
+            arq_real = FrotaRelatorioExporter.exportar_pdf_bi(
+                df_real,
+                caminho_real_bi,
+                {"lic": "R$ 12.138,79", "ipva": "R$ 13.719,35", "multas": "R$ 9.754,99", "total": "R$ 26.866,18"},
+                ["IPVA (Sefaz)", "Licenciamento (Detran)", "Multas (Detran)"],
+                identificador_frota="frota_ce"
+            )
+            self.assertTrue(os.path.exists(arq_real))
+            self.assertGreater(os.path.getsize(arq_real), 2500)
 
 
 if __name__ == "__main__":

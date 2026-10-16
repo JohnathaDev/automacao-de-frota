@@ -6,6 +6,7 @@ e sessão unificada de consulta.
 import os
 import sys
 import time
+import threading
 import subprocess
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -20,6 +21,18 @@ from webdriver_manager.chrome import ChromeDriverManager
 from core.logger_config import obter_logger
 
 logger = obter_logger("ScraperEngine")
+
+_CHROMEDRIVER_LOCK = threading.Lock()
+_CHROMEDRIVER_PATH: str | None = None
+
+
+def obter_caminho_chromedriver() -> str:
+    """Resolve e faz cache do caminho do ChromeDriver de forma thread-safe para múltiplos workers."""
+    global _CHROMEDRIVER_PATH
+    with _CHROMEDRIVER_LOCK:
+        if not _CHROMEDRIVER_PATH or not os.path.exists(_CHROMEDRIVER_PATH):
+            _CHROMEDRIVER_PATH = ChromeDriverManager().install()
+        return _CHROMEDRIVER_PATH
 
 
 class DetranResultado(tuple):
@@ -70,7 +83,7 @@ class FrotaScraperEngine:
         os.environ["WDM_LOG"] = "0"
         os.environ["WDM_LOG_LEVEL"] = "0"
 
-        service = Service(ChromeDriverManager().install())
+        service = Service(obter_caminho_chromedriver())
         if sys.platform == "win32":
             service.creation_flags = subprocess.CREATE_NO_WINDOW
 

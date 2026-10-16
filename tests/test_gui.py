@@ -15,6 +15,8 @@ class TestGUI(unittest.TestCase):
 
     def tearDown(self):
         try:
+            self.root.update_idletasks()
+            self.root.update()
             self.root.destroy()
         except Exception:
             pass
@@ -44,18 +46,23 @@ class TestGUI(unittest.TestCase):
         app = AppConsultaFrotaGUI(self.root)
         app.df_carregado = pd.DataFrame([
             {"Placa": "BRA1A11", "RENAVAM": "01111111111"},
-            {"Placa": "BRA2B22", "RENAVAM": "02222222222"}
+            {"Placa": "BRA2B22", "RENAVAM": "02222222222"},
+            {"Placa": "BRA3C33", "RENAVAM": "03333333333"}
         ])
         app.col_placa = "Placa"
         app.col_renavam = "RENAVAM"
         app._preencher_tabela_inicial()
 
         app.resultados_memoria[0] = {"lic": "R$ 1.250,00", "ipva": "PAGO", "multas": "R$ 0,00"}
-        app._atualizar_linha_tabela(0, "R$ 1.250,00", "PAGO", "R$ 0,00", "R$ 0,00", 1, 2, 1250.0, 0.0, 0.0, 1250.0)
+        app._atualizar_linha_tabela(0, "R$ 1.250,00", "PAGO", "R$ 0,00", "R$ 0,00", 1, 3, 1250.0, 0.0, 0.0, 1250.0)
 
         app.resultados_memoria[1] = {"lic": "PAGO", "ipva": "PAGO", "multas": "R$ 0,00"}
-        app._atualizar_linha_taca = 1
-        app._atualizar_linha_tabela(1, "PAGO", "PAGO", "R$ 0,00", "R$ 0,00", 2, 2, 1250.0, 0.0, 0.0, 1250.0)
+        app._atualizar_linha_tabela(1, "PAGO", "PAGO", "R$ 0,00", "R$ 0,00", 2, 3, 1250.0, 0.0, 0.0, 1250.0)
+
+        app.resultados_memoria[2] = {"lic": "Não Localizado", "ipva": "Não Localizado", "multas": "Não Localizado"}
+        app._atualizar_linha_tabela(2, "Não Localizado", "Não Localizado", "Não Localizado", "R$ 0,00", 3, 3, 1250.0, 0.0, 0.0, 1250.0)
+
+        self.assertIn(2, app.indices_em_falha)
 
         app._definir_filtro_pílula("DEBITOS")
         self.assertEqual(len(app.tree.get_children()), 1)
@@ -63,8 +70,11 @@ class TestGUI(unittest.TestCase):
         app._definir_filtro_pílula("PAGOS")
         self.assertEqual(len(app.tree.get_children()), 1)
 
+        app._definir_filtro_pílula("FALHAS")
+        self.assertEqual(len(app.tree.get_children()), 1)
+
         app._definir_filtro_pílula("TODOS")
-        self.assertEqual(len(app.tree.get_children()), 2)
+        self.assertEqual(len(app.tree.get_children()), 3)
 
     def test_janela_download_boletos_init(self):
         df_frota = pd.DataFrame([
@@ -118,6 +128,84 @@ class TestGUI(unittest.TestCase):
         )
         self.assertEqual(janela.nome_frota, "ferreira_gomes")
         janela.destroy()
+
+    def test_gui_comercial_bi_top10_sem_sobreposicao(self):
+        from unittest.mock import patch
+        import automacao_frota_gui_comercial as gui_com
+
+        def rects_intersect(b1, b2, tol=0):
+            return not (
+                b1[2] - tol <= b2[0]
+                or b2[2] - tol <= b1[0]
+                or b1[3] - tol <= b2[1]
+                or b2[3] - tol <= b1[1]
+            )
+
+        with patch.object(gui_com.AppConsultaFrotaGUI, "_carregar_planilha_automatica"), \
+             patch("tkinter.messagebox.askyesno", return_value=False):
+            app = gui_com.AppConsultaFrotaGUI(self.root)
+            app.df_carregado = pd.DataFrame([
+                {
+                    "Placa": f"THN{i}B{i:02d}",
+                    "RENAVAM": f"{10000000000 + i}",
+                    "PROPRIETÁRIO": "FERREIRA GOMES TRANSPORTES E LOGISTICA"
+                }
+                for i in range(15)
+            ])
+            app.col_placa = "Placa"
+            app.col_renavam = "RENAVAM"
+            app._preencher_tabela_inicial()
+
+            for i in range(15):
+                val = 4500.0 - (i * 210.5)
+                val_str = f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                app.resultados_memoria[i] = {
+                    "lic": "R$ 188,36",
+                    "ipva": "R$ 540,10",
+                    "multas": val_str,
+                    "multas_a_vencer": val_str
+                }
+            app._atualizar_contadores_filtro()
+
+            bi = app.painel_bi
+            self.assertEqual(len(bi.dados_bi["top_veiculos"]), 10)
+
+            for bi_w, bi_h in [(980, 230), (1320, 390), (1880, 680)]:
+                bi.winfo_width = lambda bw=bi_w: bw
+                bi.winfo_height = lambda bh=bi_h: bh
+                bi.redesenhar()
+
+                all_items = bi.find_all()
+                text_items = [i for i in all_items if bi.type(i) == "text"]
+                bar_items = (
+                    list(bi.find_withtag("bar_track"))
+                    + list(bi.find_withtag("bar_fill"))
+                    + list(bi.find_withtag("bar_seg"))
+                )
+
+                # Verifica Top 10 renderizado
+                self.assertEqual(len(bi.find_withtag("top10_lbl")), 10)
+                self.assertEqual(len(bi.find_withtag("top10_val")), 10)
+
+                # Verifica ausência de colisão Texto x Texto
+                for idx_a in range(len(text_items)):
+                    for idx_b in range(idx_a + 1, len(text_items)):
+                        ba = bi.bbox(text_items[idx_a])
+                        bb = bi.bbox(text_items[idx_b])
+                        self.assertFalse(
+                            rects_intersect(ba, bb, tol=1),
+                            f"Colisão texto x texto em {bi_w}x{bi_h}: {ba} vs {bb}"
+                        )
+
+                # Verifica ausência de colisão Texto x Barra
+                for it in text_items:
+                    bt = bi.bbox(it)
+                    for ibar in bar_items:
+                        bbar = bi.bbox(ibar)
+                        self.assertFalse(
+                            rects_intersect(bt, bbar, tol=0),
+                            f"Colisão texto x barra em {bi_w}x{bi_h}: {bt} vs {bbar}"
+                        )
 
 
 if __name__ == "__main__":

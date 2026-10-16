@@ -24,6 +24,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from webdriver_manager.chrome import ChromeDriverManager
 
 from core.data_processor import obter_ultimo_dia_util_mes, obter_proximo_dia_util
+from core.scraper_engine import obter_caminho_chromedriver
 from core.logger_config import obter_logger
 
 logger = obter_logger("BoletoDownloader")
@@ -77,7 +78,7 @@ class FrotaBoletoDownloader:
         }
         chrome_options.add_experimental_option("prefs", prefs)
 
-        service = Service(ChromeDriverManager().install())
+        service = Service(obter_caminho_chromedriver())
         if sys.platform == "win32":
             service.creation_flags = subprocess.CREATE_NO_WINDOW
 
@@ -269,6 +270,9 @@ class FrotaBoletoDownloader:
 
         url_detran = "https://sistemas.detran.ce.gov.br/central/#veiculo"
         try:
+            # Força navegação limpa para resetar o DOM e modais entre veículos
+            self.driver.get("https://sistemas.detran.ce.gov.br/central/")
+            time.sleep(0.2)
             self.driver.get(url_detran)
             janela_principal = self.driver.current_window_handle
 
@@ -291,9 +295,14 @@ class FrotaBoletoDownloader:
             time.sleep(1.5)
 
             # Verifica se há link para emissão de licenciamento
-            link_lic = self.driver.find_elements(
-                By.XPATH, "//*[contains(text(), 'Clique AQUI se deseja imprimir seu licenciamento.')]"
-            )
+            link_lic = [
+                l for l in self.driver.find_elements(
+                    By.XPATH,
+                    "//*[contains(text(), 'Clique AQUI se deseja imprimir seu licenciamento.')] | "
+                    "//*[contains(text(), 'licenciamento') and contains(text(), 'AQUI')] | "
+                    "//*[contains(text(), 'imprimir seu licenciamento')]"
+                ) if l.is_displayed()
+            ]
             if not link_lic:
                 return False, "Nenhum boleto de licenciamento em aberto disponível."
 
@@ -338,6 +347,18 @@ class FrotaBoletoDownloader:
         except Exception as e:
             logger.error(f"Erro ao baixar licenciamento {placa}: {e}")
             return False, f"Falha: {e}"
+        finally:
+            try:
+                if self.driver:
+                    self.driver.execute_script("""
+                        var m = document.getElementById('outros-servicos-modal');
+                        if (m && typeof $ !== 'undefined') { $(m).modal('hide'); }
+                        var bds = document.querySelectorAll('.modal-backdrop');
+                        bds.forEach(function(b){ b.remove(); });
+                        document.body.classList.remove('modal-open');
+                    """)
+            except Exception:
+                pass
 
     def baixar_dae_ipva(self, placa: str, renavam: str) -> tuple[bool, str]:
         """

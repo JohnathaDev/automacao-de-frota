@@ -18,12 +18,16 @@ def formatar_moeda_float(valor_str: str) -> float:
             return 0.0
         val_lower = str(valor_str).lower().strip()
         termos_ignorar = [
-            "-", "n/a", "não consultado", "falha", "erro", "aguardando",
-            "inválid", "não localizado", "timeout", "...", "pago", "restrição", "restricao"
+            "-", "n/a", "não consultado", "nao consultado", "falha", "erro", "aguardando",
+            "inválid", "invalid", "não localizado", "nao localizado", "timeout", "...", "pago", "restrição", "restricao"
         ]
         if any(termo in val_lower for termo in termos_ignorar):
             return 0.0
-        limpo = val_lower.replace("r$", "").replace(".", "").replace(",", ".").strip()
+        limpo = val_lower.replace("r$", "").strip()
+        if "," in limpo:
+            limpo = limpo.replace(".", "").replace(",", ".").strip()
+        elif limpo.count(".") > 1:
+            limpo = limpo.replace(".", "").strip()
         return float(limpo)
     except Exception:
         return 0.0
@@ -130,9 +134,9 @@ def obter_ultimo_dia_util_mes(data_base: datetime | None = None) -> str:
     ultimo_dia = calendar.monthrange(ano, mes)[1]
     d = datetime(ano, mes, ultimo_dia)
 
-    # Feriados nacionais comuns no Brasil (dia, mês)
+    # Feriados nacionais fixos no Brasil (dia, mês)
     feriados = [
-        (1, 1), (21, 4), (1, 5), (7, 9), (12, 10), (2, 11), (15, 11), (25, 12)
+        (1, 1), (21, 4), (1, 5), (7, 9), (12, 10), (2, 11), (15, 11), (20, 11), (25, 12)
     ]
 
     while d.weekday() >= 5 or (d.day, d.month) in feriados:
@@ -252,8 +256,8 @@ class FrotaDataProcessor:
             v_lower = v_str.lower()
             if v_str in ["R$ 0,00", "0,00", "0.00", "0"]:
                 return "PAGO"
-            if formatar_moeda_float(v_str) == 0.0 and v_str not in ["-", "N/A", "Não Consultado"] and not any(
-                f in v_lower for f in ["falha", "erro", "inválid", "timeout", "não localizado", "restriç", "restric"]
+            if formatar_moeda_float(v_str) == 0.0 and v_str not in ["-", "N/A", "Não Consultado", ""] and not any(
+                f in v_lower for f in ["falha", "erro", "inválid", "invalid", "timeout", "não localizado", "nao localizado", "restriç", "restric"]
             ):
                 return "PAGO"
             return v_str
@@ -279,16 +283,23 @@ class FrotaDataProcessor:
                 else None
             )
 
+            nao_consultado = all(
+                v.strip() in ["-", "N/A", "Não Consultado", ""]
+                for v in [lic, ipva, multas]
+            )
+
             tem_falha = any(
                 termo in v.lower()
                 for v in [lic, ipva, multas]
-                for termo in ["falha", "erro", "timeout", "inválid", "não localizado"]
+                for termo in ["falha", "erro", "timeout", "inválid", "invalid", "não localizado", "nao localizado"]
             )
 
             total_real = calcular_total_a_pagar_veiculo(lic, ipva, multas, m_a_vencer)
-            totais_a_pagar_lista.append(formatar_float_moeda(total_real))
+            totais_a_pagar_lista.append("-" if nao_consultado else formatar_float_moeda(total_real))
 
-            if tem_falha:
+            if nao_consultado:
+                status_lista.append("Não Consultado")
+            elif tem_falha:
                 status_lista.append("Falha na Consulta")
             elif "restriç" in lic.lower() or "restric" in lic.lower():
                 if total_real > 0:
@@ -318,6 +329,14 @@ class FrotaDataProcessor:
     ) -> tuple[str, str, str]:
         """Delega para a função utilitária obter_caminhos_arquivos_saida."""
         return obter_caminhos_arquivos_saida(caminho_entrada, pasta_destino)
+
+    @staticmethod
+    def obter_caminho_pdf_bi(
+        caminho_entrada: str,
+        pasta_destino: str | None = None
+    ) -> str:
+        """Delega para a função utilitária obter_caminho_pdf_bi."""
+        return obter_caminho_pdf_bi(caminho_entrada, pasta_destino)
 
 
 def gerar_nome_base_resultado(caminho_ou_nome_arquivo: str) -> str:
@@ -383,5 +402,19 @@ def obter_caminhos_arquivos_saida(
     arquivo_pdf = os.path.join(pasta_destino, f"{nome_base}.pdf")
     arquivo_checkpoint = os.path.join(pasta_destino, f"~checkpoint_{nome_base}.xlsx")
     return arquivo_excel, arquivo_pdf, arquivo_checkpoint
+
+
+def obter_caminho_pdf_bi(
+    caminho_entrada: str,
+    pasta_destino: str | None = None
+) -> str:
+    """
+    Gera o caminho completo para o 2º relatório em PDF contendo o Painel Executivo de BI:
+    Exemplo: 'frota_ferreira_gomes.xlsx' -> 'resultados_ferreira_gomes_BI.pdf'
+    """
+    nome_base = gerar_nome_base_resultado(caminho_entrada)
+    if not pasta_destino:
+        pasta_destino = os.path.dirname(os.path.abspath(caminho_entrada)) if caminho_entrada else os.getcwd()
+    return os.path.join(pasta_destino, f"{nome_base}_BI.pdf")
 
 

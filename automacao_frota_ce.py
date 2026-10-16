@@ -21,6 +21,7 @@ from core import (
     FrotaDataProcessor,
     FrotaScraperEngine,
     FrotaRelatorioExporter,
+    PADRAO_PLACA,
     formatar_moeda_float,
     formatar_float_moeda,
     calcular_total_a_pagar_veiculo,
@@ -110,22 +111,31 @@ def processar_frota(
             m_a_vencer = "R$ 0,00"
             val_ipva = "-"
 
-            if consultar_lic or consultar_multas:
-                res_detran = scraper.consultar_detran(placa, renavam, consultar_lic, consultar_multas)
-                val_lic = res_detran[0]
-                if str(val_lic).strip() in ["R$ 0,00", "0,00"]:
-                    val_lic = "PAGO"
-                val_multas = res_detran[1]
-                m_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
-                print(f"    -> Detran-CE: Licenciamento={val_lic} | Multas={val_multas} (A vencer: {m_a_vencer})")
-                time.sleep(0.4)
+            if not PADRAO_PLACA.match(placa):
+                if consultar_lic:
+                    val_lic = "Placa Inválida"
+                if consultar_multas:
+                    val_multas = "Placa Inválida"
+                if consultar_ipva:
+                    val_ipva = "Placa Inválida"
+                print(f"    -> [AVISO] Placa fora do padrão Mercosul/Tradicional: {placa}")
+            else:
+                if consultar_lic or consultar_multas:
+                    res_detran = scraper.consultar_detran(placa, renavam, consultar_lic, consultar_multas)
+                    val_lic = res_detran[0]
+                    if str(val_lic).strip() in ["R$ 0,00", "0,00"]:
+                        val_lic = "PAGO"
+                    val_multas = res_detran[1]
+                    m_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
+                    print(f"    -> Detran-CE: Licenciamento={val_lic} | Multas={val_multas} (A vencer: {m_a_vencer})")
+                    time.sleep(0.4)
 
-            if consultar_ipva:
-                val_ipva = scraper.consultar_sefaz_ipva(placa, renavam)
-                if str(val_ipva).strip() in ["R$ 0,00", "0,00"]:
-                    val_ipva = "PAGO"
-                print(f"    -> Sefaz-CE:  IPVA em aberto={val_ipva}")
-                time.sleep(0.4)
+                if consultar_ipva:
+                    val_ipva = scraper.consultar_sefaz_ipva(placa, renavam)
+                    if str(val_ipva).strip() in ["R$ 0,00", "0,00"]:
+                        val_ipva = "PAGO"
+                    print(f"    -> Sefaz-CE:  IPVA em aberto={val_ipva}")
+                    time.sleep(0.4)
 
             licenciamentos.append(val_lic)
             ipvas.append(val_ipva)
@@ -179,22 +189,41 @@ def processar_frota(
     arquivo_excel, arquivo_pdf, chk_path = FrotaDataProcessor.obter_caminhos_arquivos_saida(
         caminho_entrada, pasta_destino
     )
+    arquivo_pdf_bi = FrotaDataProcessor.obter_caminho_pdf_bi(caminho_entrada, pasta_destino)
     nome_base = FrotaDataProcessor.gerar_nome_base_resultado(caminho_entrada)
     identificador_frota = re.sub(r"^resultados[_\-\s]*", "", nome_base, flags=re.IGNORECASE).strip() or nome_base
 
     # Gera Excel com proteção contra PermissionError
     caminho_excel = FrotaRelatorioExporter.exportar_excel(df_final, arquivo_excel)
-    print(f"  -> Planilha Excel gerada: {os.path.abspath(caminho_excel)}")
+    print(f"  -> Planilha Excel gerada:    {os.path.abspath(caminho_excel)}")
+
+    filtros_ativos = []
+    if consultar_ipva:
+        filtros_ativos.append("IPVA (Sefaz)")
+    if consultar_lic:
+        filtros_ativos.append("Licenciamento (Detran)")
+    if consultar_multas:
+        filtros_ativos.append("Multas (Detran)")
 
     # Gera PDF Paisagem com proteção contra PermissionError
     caminho_pdf = FrotaRelatorioExporter.exportar_pdf(
         df_final,
         arquivo_pdf,
         totais_dict,
-        ["IPVA (Sefaz)", "Licenciamento (Detran)", "Multas (Detran)"],
+        filtros_ativos,
         identificador_frota=identificador_frota
     )
-    print(f"  -> Relatório PDF gerado:  {os.path.abspath(caminho_pdf)}")
+    print(f"  -> Relatório PDF gerado:     {os.path.abspath(caminho_pdf)}")
+
+    # Gera 2º PDF com o Relatório Analítico de BI
+    caminho_pdf_bi = FrotaRelatorioExporter.exportar_pdf_bi(
+        df_final,
+        arquivo_pdf_bi,
+        totais_dict,
+        filtros_ativos,
+        identificador_frota=identificador_frota
+    )
+    print(f"  -> Relatório BI PDF gerado:  {os.path.abspath(caminho_pdf_bi)}")
 
     print("\n" + "=" * 70)
     print(" PROCESSAMENTO CONCLUÍDO COM SUCESSO!")
