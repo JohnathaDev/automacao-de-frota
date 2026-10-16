@@ -13,7 +13,10 @@ from core.data_processor import (
     obter_proximo_dia_util,
     PADRAO_PLACA,
     gerar_nome_base_resultado,
-    obter_caminhos_arquivos_saida
+    obter_caminhos_arquivos_saida,
+    obter_caminho_pdf_bi,
+    carregar_resultado_anterior,
+    comparar_auditorias
 )
 from core.scraper_engine import FrotaScraperEngine
 from core.boleto_downloader import FrotaBoletoDownloader
@@ -32,6 +35,9 @@ __all__ = [
     "PADRAO_PLACA",
     "gerar_nome_base_resultado",
     "obter_caminhos_arquivos_saida",
+    "obter_caminho_pdf_bi",
+    "carregar_resultado_anterior",
+    "comparar_auditorias",
     "FrotaScraperEngine",
     "FrotaBoletoDownloader",
     "FrotaRelatorioExporter"

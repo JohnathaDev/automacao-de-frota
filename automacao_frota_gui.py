@@ -1757,6 +1757,7 @@ class AppConsultaFrotaGUI:
         self.arquivo_excel_gerado = ""
         self.arquivo_pdf_gerado = ""
         self.arquivo_pdf_bi_gerado = ""
+        self.ultimo_comparativo_bi: dict | None = None
 
         # Filtros de Débito
         self.var_ipva = tk.BooleanVar(value=self.cfg.get("consultar_ipva", True))
@@ -3110,6 +3111,14 @@ class AppConsultaFrotaGUI:
         arquivo_pdf_bi = FrotaDataProcessor.obter_caminho_pdf_bi(caminho_arquivo, pasta_destino)
         nome_frota_log = FrotaDataProcessor.gerar_nome_base_resultado(caminho_arquivo)
 
+        # Captura a última planilha de resultados existente no disco ANTES de ser sobrescrita
+        df_anterior_disco, data_anterior_disco = FrotaDataProcessor.carregar_resultado_anterior(arquivo_excel)
+        if df_anterior_disco is not None:
+            self._adicionar_log(
+                f"Planilha anterior localizada ('{os.path.basename(arquivo_excel)}' de {data_anterior_disco}). "
+                f"As alterações e pagamentos serão comparados no Relatório de BI."
+            )
+
         scrapers_ativos = []
         try:
             df = self.df_carregado.copy()
@@ -3249,6 +3258,26 @@ class AppConsultaFrotaGUI:
                 resultados_multas_a_vencer=multas_a_vencer_final
             )
 
+            # Compara com a última planilha feita antes de sobrescrevê-la
+            comparativo_anterior = None
+            if df_anterior_disco is not None:
+                comparativo_anterior = FrotaDataProcessor.comparar_auditorias(
+                    df_anterior_disco,
+                    df_final,
+                    data_anterior=data_anterior_disco
+                )
+                self.ultimo_comparativo_bi = comparativo_anterior
+                if comparativo_anterior:
+                    nv = "SUCESSO" if comparativo_anterior.get("teve_alteracao") else "INFO"
+                    self._adicionar_log(
+                        f"Comparativo de evolução ({comparativo_anterior['data_anterior']} -> {comparativo_anterior['data_atual']}):",
+                        nivel=nv
+                    )
+                    for frase in comparativo_anterior.get("frases_resumo", []):
+                        self._adicionar_log(f"  ↳ {frase}", nivel=nv)
+            else:
+                self.ultimo_comparativo_bi = None
+
             soma_lic_f = sum(formatar_moeda_float(v) for v in lics_final)
             soma_ipva_f = sum(formatar_moeda_float(v) for v in ipvas_final)
             soma_multas_f = sum(formatar_moeda_float(v) for v in multas_final)
@@ -3292,7 +3321,12 @@ class AppConsultaFrotaGUI:
                 self._adicionar_log(f"Relatório PDF gerado com sucesso: {os.path.basename(caminho_pdf_gerado)}")
 
                 caminho_pdf_bi_gerado = FrotaRelatorioExporter.exportar_pdf_bi(
-                    df_final, arquivo_pdf_bi, totais_dict, filtros_ativos, identificador_frota=identificador_frota
+                    df_final,
+                    arquivo_pdf_bi,
+                    totais_dict,
+                    filtros_ativos,
+                    identificador_frota=identificador_frota,
+                    comparativo_anterior=comparativo_anterior
                 )
                 self.arquivo_pdf_bi_gerado = caminho_pdf_bi_gerado
                 self._adicionar_log(f"Relatório PDF de BI gerado com sucesso: {os.path.basename(caminho_pdf_bi_gerado)}")
@@ -3463,6 +3497,10 @@ class AppConsultaFrotaGUI:
                 msg += f"\n📑 Relatório PDF: {os.path.basename(arq_pdf)}"
             if self.arquivo_pdf_bi_gerado and os.path.exists(self.arquivo_pdf_bi_gerado):
                 msg += f"\n📈 Relatório BI (PDF): {os.path.basename(self.arquivo_pdf_bi_gerado)}"
+            if self.ultimo_comparativo_bi and self.ultimo_comparativo_bi.get("teve_alteracao"):
+                resumos = self.ultimo_comparativo_bi.get("frases_resumo", [])[:4]
+                msg += f"\n\n🔄 Alterações desde a última planilha ({self.ultimo_comparativo_bi.get('data_anterior')}):\n"
+                msg += "\n".join(f"• {r}" for r in resumos)
             if total_com_debitos > 0:
                 msg += f"\n\n💡 {total_com_debitos} veículo(s) possuem débitos de Licenciamento ou IPVA.\nVocê pode usar o botão 'Baixar Boletos' abaixo para emitir os PDFs."
             messagebox.showinfo("Sucesso", msg)
@@ -3516,8 +3554,11 @@ class AppConsultaFrotaGUI:
                     if self.var_lic.get(): filtros.append("Licenciamento")
                     if self.var_multas.get(): filtros.append("Multas")
                     self.arquivo_pdf_bi_gerado = FrotaRelatorioExporter.exportar_pdf_bi(
-                        df_final, arq_bi, filtros_ativos=filtros or ["IPVA", "Licenciamento", "Multas"],
-                        identificador_frota=ident
+                        df_final,
+                        arq_bi,
+                        filtros_ativos=filtros or ["IPVA", "Licenciamento", "Multas"],
+                        identificador_frota=ident,
+                        comparativo_anterior=self.ultimo_comparativo_bi
                     )
                     self._adicionar_log(f"Relatório PDF de BI gerado sob demanda: {os.path.basename(self.arquivo_pdf_bi_gerado)}", nivel="SUCESSO")
                 except Exception as e:

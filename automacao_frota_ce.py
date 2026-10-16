@@ -193,6 +193,20 @@ def processar_frota(
     nome_base = FrotaDataProcessor.gerar_nome_base_resultado(caminho_entrada)
     identificador_frota = re.sub(r"^resultados[_\-\s]*", "", nome_base, flags=re.IGNORECASE).strip() or nome_base
 
+    # Lê a última planilha existente antes de sobrescrevê-la para identificar baixas/pagamentos
+    df_anterior, data_anterior = FrotaDataProcessor.carregar_resultado_anterior(arquivo_excel)
+    comparativo_anterior = None
+    if df_anterior is not None:
+        comparativo_anterior = FrotaDataProcessor.comparar_auditorias(
+            df_anterior,
+            df_final,
+            data_anterior=data_anterior
+        )
+        if comparativo_anterior:
+            print(f"\n  [Comparativo com planilha anterior de {comparativo_anterior['data_anterior']}]")
+            for frase in comparativo_anterior.get("frases_resumo", []):
+                print(f"    • {frase}")
+
     # Gera Excel com proteção contra PermissionError
     caminho_excel = FrotaRelatorioExporter.exportar_excel(df_final, arquivo_excel)
     print(f"  -> Planilha Excel gerada:    {os.path.abspath(caminho_excel)}")
@@ -215,13 +229,14 @@ def processar_frota(
     )
     print(f"  -> Relatório PDF gerado:     {os.path.abspath(caminho_pdf)}")
 
-    # Gera 2º PDF com o Relatório Analítico de BI
+    # Gera 2º PDF com o Relatório Analítico de BI + Comparativo de Evolução
     caminho_pdf_bi = FrotaRelatorioExporter.exportar_pdf_bi(
         df_final,
         arquivo_pdf_bi,
         totais_dict,
         filtros_ativos,
-        identificador_frota=identificador_frota
+        identificador_frota=identificador_frota,
+        comparativo_anterior=comparativo_anterior
     )
     print(f"  -> Relatório BI PDF gerado:  {os.path.abspath(caminho_pdf_bi)}")
 

@@ -369,13 +369,15 @@ class FrotaRelatorioExporter:
         caminho_arquivo: str,
         totais: dict | None = None,
         filtros_ativos: list[str] | None = None,
-        identificador_frota: str = ""
+        identificador_frota: str = "",
+        comparativo_anterior: dict | None = None
     ) -> str:
         """
         Gera o 2º relatório executivo em PDF (Paisagem A4) contendo o Painel Analítico de BI:
         - Gráfico Vetorial de Rosca (Donut Chart) de Composição Financeira por Tributo
         - Medidor Vetorial de Regularidade & Saúde da Frota + Indicadores Operacionais
         - Gráfico Vetorial Horizontal do Top 10 Veículos de Maior Impacto
+        - Comparativo de Evolução e Baixas de Débitos em relação à última planilha (IPVA, Licenciamento e Multas pagas)
         - Tabela Analítica Detalhada do Top 10 Veículos Críticos
         - Tabela Consolidada por Proprietário / Centro de Custo (quando presente na planilha)
         """
@@ -546,6 +548,10 @@ class FrotaRelatorioExporter:
             'TdRightBI', parent=styles['Normal'],
             fontSize=7.2, leading=9.2, textColor=colors.HexColor("#1E293B"), alignment=2
         )
+        estilo_bullet_comp = ParagraphStyle(
+            'BulletCompBI', parent=styles['Normal'],
+            fontSize=8.2, leading=11.5, textColor=colors.HexColor("#065F46"), alignment=0
+        )
 
         elementos = []
         elementos.append(Paragraph("PAINEL ANALÍTICO DE BI & INTELIGÊNCIA DE FROTA (CE)", estilo_titulo))
@@ -617,6 +623,109 @@ class FrotaRelatorioExporter:
         )
         elementos.append(painel_draw)
         elementos.append(Spacer(1, 10))
+
+        # 2.5 SEÇÃO COMPARATIVA COM A PLANILHA ANTERIOR (SE EXISTIR HISTÓRICO ANTERIOR)
+        if comparativo_anterior:
+            dt_ant = comparativo_anterior.get("data_anterior", "Auditoria Anterior")
+            dt_atu = comparativo_anterior.get("data_atual", datetime.now().strftime("%d/%m/%Y %H:%M"))
+            elementos.append(
+                Paragraph(
+                    f"COMPARATIVO DE EVOLUÇÃO & BAIXAS DE DÉBITOS (ANTERIOR: {dt_ant} × ATUAL: {dt_atu})",
+                    estilo_sec
+                )
+            )
+
+            tot_ant_c = comparativo_anterior.get("total_anterior", 0.0)
+            tot_atu_c = comparativo_anterior.get("total_atual", 0.0)
+            abatido_liq = comparativo_anterior.get("saldo_abatido_liquido", 0.0)
+            pago_ipva = comparativo_anterior.get("total_pago_ipva", 0.0)
+            pago_lic = comparativo_anterior.get("total_pago_lic", 0.0)
+            pago_mul = comparativo_anterior.get("total_pago_multas", 0.0)
+            movs = comparativo_anterior.get("movimentacoes", [])
+
+            cards_comp = [[
+                Paragraph(
+                    f"<b>PASSIVO ANTERIOR</b><br/><font size=9.5 color='#334155'><b>{formatar_float_moeda(tot_ant_c)}</b></font>"
+                    f"<br/><font size=6.5 color='#64748B'>Ref.: {dt_ant}</font>",
+                    estilo_td
+                ),
+                Paragraph(
+                    f"<b>PASSIVO ATUAL</b><br/><font size=9.5 color='#1E3A8A'><b>{formatar_float_moeda(tot_atu_c)}</b></font>"
+                    f"<br/><font size=6.5 color='#64748B'>Ref.: {dt_atu}</font>",
+                    estilo_td
+                ),
+                Paragraph(
+                    f"<b>TOTAL PAGO / BAIXADO</b><br/><font size=9.5 color='#15803D'><b>{formatar_float_moeda(abatido_liq)}</b></font>"
+                    f"<br/><font size=6.5 color='#166534'>IPVA: {formatar_float_moeda(pago_ipva)} • Lic: {formatar_float_moeda(pago_lic)} • Multas: {formatar_float_moeda(pago_mul)}</font>",
+                    estilo_td
+                ),
+                Paragraph(
+                    f"<b>ALTERAÇÕES DETECTADAS</b><br/><font size=9.5 color='#0F172A'><b>{len(movs)} ocorrência(s)</b></font>"
+                    f"<br/><font size=6.5 color='#64748B'>Em {comparativo_anterior.get('veiculos_comparados', 0)} veículos comparados</font>",
+                    estilo_td
+                ),
+            ]]
+            tab_cards_comp = Table(cards_comp, colWidths=[180, 180, 235, 175])
+            tab_cards_comp.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+                ('BOX', (0, 0), (-1, -1), 0.7, colors.HexColor("#CBD5E1")),
+                ('INNERGRID', (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            elementos.append(tab_cards_comp)
+            elementos.append(Spacer(1, 5))
+
+            frases = comparativo_anterior.get("frases_resumo", [])
+            if frases:
+                linhas_frases = "<br/>".join(f"• <b>{f}</b>" for f in frases)
+                cor_bg_box = "#ECFDF5" if comparativo_anterior.get("teve_alteracao") else "#F8FAFC"
+                cor_bd_box = "#10B981" if comparativo_anterior.get("teve_alteracao") else "#CBD5E1"
+                box_resumo = Table([[Paragraph(linhas_frases, estilo_bullet_comp)]], colWidths=[770])
+                box_resumo.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor(cor_bg_box)),
+                    ('BOX', (0, 0), (-1, -1), 0.8, colors.HexColor(cor_bd_box)),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 10),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ]))
+                elementos.append(box_resumo)
+                elementos.append(Spacer(1, 6))
+
+            if movs:
+                cab_mov = [
+                    Paragraph("Placa", estilo_th),
+                    Paragraph("Proprietário / Cliente", estilo_th),
+                    Paragraph("Tributo / Evento Identificado", estilo_th),
+                    Paragraph("Valor Anterior", estilo_th),
+                    Paragraph("Valor Atual", estilo_th),
+                    Paragraph("Valor Pago / Variação", estilo_th),
+                ]
+                linhas_mov = [cab_mov]
+                for mv in movs:
+                    cor_var = "#15803D" if mv.get("tipo") == "BAIXA" else "#DC2626"
+                    linhas_mov.append([
+                        Paragraph(f"<b>{mv['placa']}</b>", estilo_td),
+                        Paragraph((mv.get("prop") or "-")[:36], estilo_td_left),
+                        Paragraph(f"<b>{mv['tributo']}</b>", estilo_td_left),
+                        Paragraph(mv["anterior"], estilo_td_right),
+                        Paragraph(f"<b>{mv['atual']}</b>", estilo_td_right),
+                        Paragraph(f"<font color='{cor_var}'><b>{mv['variacao']}</b></font>", estilo_td_right),
+                    ])
+                tab_mov = Table(linhas_mov, colWidths=[75, 215, 175, 100, 100, 105], repeatRows=1)
+                tab_mov.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#065F46")),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor("#FFFFFF"), colors.HexColor("#F0FDF4")]),
+                    ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor("#86EFAC")),
+                    ('INNERGRID', (0, 0), (-1, -1), 0.3, colors.HexColor("#BBF7D0")),
+                    ('TOPPADDING', (0, 0), (-1, -1), 3),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ]))
+                elementos.append(tab_mov)
+                elementos.append(Spacer(1, 8))
 
         # 3. TABELA ANALÍTICA: TOP 10 VEÍCULOS DE MAIOR IMPACTO FINANCEIRO
         elementos.append(Paragraph("RANKING DETALHADO — TOP 10 VEÍCULOS DE MAIOR IMPACTO FINANCEIRO", estilo_sec))
