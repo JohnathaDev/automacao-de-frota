@@ -1,14 +1,15 @@
-# 🚗 Automação de Frota - Detran/Sefaz CE (Versão 4.0)
+# 🚗 Automação de Frota - Detran/Sefaz CE (Versão 4.1)
 
-Sistema corporativo de web scraping e automação veicular com Interface Gráfica nativa (GUI Comercial — *Fleet Command Pro*) e CLI para consulta em lote de débitos de **Licenciamento (Detran-CE)**, **IPVA (Sefaz-CE)** e **Multas (Detran-CE)**, além de **emissão automática de boletos/DAEs** e **Business Intelligence (BI) integrado**.
+Sistema corporativo de web scraping e automação veicular com Interface Gráfica nativa (GUI Comercial — *Fleet Command Pro*) e CLI para consulta em lote de débitos de **Licenciamento (Detran-CE)**, **IPVA (Sefaz-CE)** e **Multas (Detran-CE)**, além de **emissão automática de boletos/DAEs**, **Business Intelligence (BI) integrado** e **comparativo automático de baixas de débitos**.
 
 ---
 
-## 🌟 Funcionalidades da Versão 4.0
+## 🌟 Funcionalidades da Versão 4.1
 
 - **Arquitetura Modular em Camadas (`core/`):** Estrutura limpa e escalável com módulos desacoplados para raspagem, processamento de dados, emissão de boletos, exportação de relatórios, persistência de preferências e logging estruturado.
+- **Comparativo Automático de Evolução e Baixas de Débitos (Novo v4.1):** Antes de sobrescrever a planilha anterior de uma frota no disco, o sistema carrega o histórico e compara cada veículo, identificando no PDF de BI, nos logs e na GUI todas as baixas e pagamentos realizados no período (ex.: *quitação de IPVA nominal por placa, quitação de Licenciamento, valor abatido em multas e regularização de restrições*).
 - **Painel Analítico de BI Integrado (Top 10):** Aba dedicada na interface gráfica com **Gráfico de Rosca (Donut Chart)** de composição tributária, **Saúde e Regularidade da Frota** e **Ranking Top 10 Veículos de Maior Impacto Financeiro**, com layout anti-colisão em tempo real.
-- **Duplo Relatório PDF Executivo (Relatório Geral + Relatório de BI):** Além da planilha Excel (`.xlsx`) e do relatório consolidado (`.pdf`), gera automaticamente um **2º PDF Executivo de BI (`*_BI.pdf`)** com gráficos vetoriais, KPIs, Top 10 veículos mais críticos e consolidação por Proprietário/Centro de Custo.
+- **Duplo Relatório PDF Executivo (Relatório Geral + Relatório de BI):** Além da planilha Excel (`.xlsx`) e do relatório consolidado (`.pdf`), gera automaticamente um **2º PDF Executivo de BI (`*_BI.pdf`)** com gráficos vetoriais, KPIs, comparativo de baixas de débitos, Top 10 veículos mais críticos e consolidação por Proprietário/Centro de Custo.
 - **Raio-X Executivo do Veículo:** Duplo clique em qualquer veículo na tabela abre o detalhamento individual completo com botão para copiar resumo formatado para WhatsApp ou E-mail.
 - **Download e Emissão Automática de Boletos (PDF):** Módulo dedicado para emissão e download direto dos boletos/DAEs de Licenciamento e IPVA, com organização automática por pastas e nomenclatura padronizada por veículo e data de vencimento.
 - **Suporte a Múltiplos Workers (Concorrência):** Processamento paralelo configurável com múltiplos navegadores em simultâneo para acelerar a consulta de grandes frotas.
