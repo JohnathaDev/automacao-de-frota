@@ -18,7 +18,8 @@ venv/
 ENV/
 build/
 develop-eggs/
-dist/
+dist/*
+!dist/automacao_frota_gui.exe
 downloads/
 eggs/
 .eggs/
