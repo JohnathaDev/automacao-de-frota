@@ -6,6 +6,11 @@
 logs/
 config.json
 
+# Memória Local do Sistema (NÃO SUBIR AO GITHUB)
+MEMORIA_SISTEMA.md
+MEMORIA_*.md
+
+
 
 # Python
 __pycache__/

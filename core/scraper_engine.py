@@ -4,12 +4,14 @@ Inclui resiliência avançada, auto-heal (reinicialização automática do naveg
 e sessão unificada de consulta.
 """
 import os
+import re
 import sys
 import time
 import shutil
 import tempfile
 import threading
 import subprocess
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.webdriver import WebDriver as ChromeDriver
 from selenium.webdriver.chrome.service import Service
@@ -21,6 +23,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
 
+from core.data_processor import formatar_moeda_float, formatar_float_moeda
 from core.logger_config import obter_logger
 
 logger = obter_logger("ScraperEngine")
@@ -71,23 +74,39 @@ class DetranResultado(tuple):
     """
     Subclasse de tuple (lic, multas) para retrocompatibilidade perfeita com desempacotamento de 2 valores:
     val_lic, val_multas = scraper.consultar_detran(...)
-    Expõe também multas_a_vencer e multas_vencidas para cálculo exato do Total a Pagar.
+    Expõe também multas_a_vencer, multas_vencidas e usou_chassi para rastreabilidade.
     """
-    def __new__(cls, val_lic: str, val_multas: str, multas_a_vencer: str = "R$ 0,00", multas_vencidas: str = "R$ 0,00"):
+    def __new__(
+        cls,
+        val_lic: str,
+        val_multas: str,
+        multas_a_vencer: str = "R$ 0,00",
+        multas_vencidas: str = "R$ 0,00",
+        usou_chassi: bool = False
+    ):
         return super().__new__(cls, (val_lic, val_multas))
 
-    def __init__(self, val_lic: str, val_multas: str, multas_a_vencer: str = "R$ 0,00", multas_vencidas: str = "R$ 0,00"):
+    def __init__(
+        self,
+        val_lic: str,
+        val_multas: str,
+        multas_a_vencer: str = "R$ 0,00",
+        multas_vencidas: str = "R$ 0,00",
+        usou_chassi: bool = False
+    ):
         self.lic = val_lic
         self.multas = val_multas
         self.multas_a_vencer = multas_a_vencer
         self.multas_vencidas = multas_vencidas
+        self.usou_chassi = usou_chassi
 
 
 class FrotaScraperEngine:
     """
     Executa a automação de consultas no Detran-CE e Sefaz-CE com alta resiliência,
     sessão única unificada para Licenciamento e Multas e tratamento explícito de falhas.
-    Suporta auto-heal (recriação automática do WebDriver em caso de crash).
+    Suporta auto-heal (recriação automática do WebDriver em caso de crash) e fallback
+    automático por Chassi quando o RENAVAM está incorreto ou ausente.
     """
 
     def __init__(self, headless: bool = True):
@@ -171,14 +190,15 @@ class FrotaScraperEngine:
         renavam: str,
         consultar_lic: bool,
         consultar_multas: bool,
-        tentativa_atual: int = 1
+        tentativa_atual: int = 1,
+        chassi: str = "",
+        usar_chassi: bool = False
     ) -> DetranResultado:
         """
         Consulta Detran-CE na mesma sessão:
         Extrai Licenciamento e/ou Multas com navegação unificada para velocidade máxima.
-        Diferencia multas a vencer (no prazo) de multas já vencidas (embutidas no licenciamento).
-        Diferencia veículos regulares (R$ 0,00) de falhas/erros de conexão.
-        Possui auto-heal se o navegador travar.
+        Se o RENAVAM estiver ausente, inválido ou retornar 'Veículo não encontrado',
+        realiza fallback automático pesquisando por Placa + Chassi (caso o chassi esteja disponível).
         """
         val_lic = "-" if not consultar_lic else "Falha Detran"
         val_multas = "-" if not consultar_multas else "Falha Detran"
@@ -187,6 +207,17 @@ class FrotaScraperEngine:
 
         if not (consultar_lic or consultar_multas):
             return DetranResultado("-", "-", "-", "-")
+
+        from core.data_processor import sanitizar_chassi
+        placa_limpa = str(placa).strip().upper()
+        renavam_limpo = str(renavam).strip()
+        chassi_limpo = sanitizar_chassi(chassi)
+
+        renavam_valido = bool(renavam_limpo) and renavam_limpo.isdigit() and int(renavam_limpo) > 0
+        if not usar_chassi and not renavam_valido and chassi_limpo:
+            usar_chassi = True
+
+        credencial_busca = chassi_limpo if (usar_chassi and chassi_limpo) else renavam_limpo
 
         try:
             if not self.driver:
@@ -203,17 +234,14 @@ class FrotaScraperEngine:
             )
             self.driver.execute_script("arguments[0].click();", menu_btn)
 
-            # 2. Localiza inputs visíveis (Placa e RENAVAM) e preenche de forma limpa
+            # 2. Localiza inputs visíveis (Placa e RENAVAM/Chassi) e preenche de forma limpa
             self.wait.until(lambda d: len([i for i in d.find_elements(By.TAG_NAME, "input") if i.is_displayed()]) >= 2)
             inputs = [i for i in self.driver.find_elements(By.TAG_NAME, "input") if i.is_displayed()]
-
-            placa_limpa = str(placa).strip().upper()
-            renavam_limpo = str(renavam).strip()
 
             inputs[0].clear()
             inputs[0].send_keys(placa_limpa)
             inputs[1].clear()
-            inputs[1].send_keys(renavam_limpo)
+            inputs[1].send_keys(credencial_busca)
 
             # 3. Clica em CONFIRMAR
             btn_confirmar = self.wait.until(
@@ -226,7 +254,14 @@ class FrotaScraperEngine:
 
             # 4. Aguarda a estabilização da resposta do Detran pós-confirmação
             def resposta_detran_pronta(d):
-                tem_alerta = len(d.find_elements(By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'Inexistente') or contains(text(), 'Dados incorretos')]")) > 0
+                tem_alerta = len([
+                    a for a in d.find_elements(
+                        By.XPATH,
+                        "//*[contains(@class, 'msg-validacao') or contains(text(), 'não encontrado') "
+                        "or contains(text(), 'Inexistente') or contains(text(), 'Dados incorretos') "
+                        "or contains(text(), 'inválido')]"
+                    ) if a.is_displayed() and a.text.strip()
+                ]) > 0
                 tem_link_lic = len(d.find_elements(By.XPATH, "//*[contains(text(), 'licenciamento') and contains(text(), 'AQUI')] | //*[contains(text(), 'imprimir seu licenciamento')]")) > 0
                 tem_link_multa = len(d.find_elements(By.XPATH, "//*[contains(text(), 'CLIQUE AQUI')]")) > 0
                 tem_sem_multa = len(d.find_elements(By.XPATH, "//*[contains(text(), 'não possui multas') or contains(text(), 'Nenhuma multa')]")) > 0
@@ -239,18 +274,45 @@ class FrotaScraperEngine:
                 pass
             time.sleep(1.0)
 
-            # Checa se houve alerta de veículo inexistente/inválido VISÍVEL
+            # Checa se houve alerta de veículo inexistente/inválido VISÍVEL ou se a seção de dados não carregou
             alertas = [
                 a for a in self.driver.find_elements(
-                    By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'Inexistente') or contains(text(), 'Dados incorretos')]"
-                ) if a.is_displayed()
+                    By.XPATH,
+                    "//*[contains(@class, 'msg-validacao') or contains(text(), 'não encontrado') "
+                    "or contains(text(), 'Inexistente') or contains(text(), 'Dados incorretos') "
+                    "or contains(text(), 'inválido')]"
+                ) if a.is_displayed() and a.text.strip()
             ]
-            if alertas:
+            tem_secao_veiculo = len(self.driver.find_elements(
+                By.XPATH,
+                f"//*[contains(text(), 'licenciamento') and contains(text(), 'AQUI')] | "
+                f"//*[contains(text(), 'imprimir seu licenciamento')] | "
+                f"//*[contains(text(), 'CLIQUE AQUI')] | "
+                f"//*[contains(text(), 'não possui multas') or contains(text(), 'Nenhuma multa')] | "
+                f"//*[contains(text(), '{placa_limpa}') and not(self::input)]"
+            )) > 0
+
+            if alertas or not tem_secao_veiculo:
+                if not usar_chassi and chassi_limpo:
+                    logger.info(
+                        f"Detran-CE: Placa {placa_limpa} não localizada via RENAVAM ({renavam_limpo}). "
+                        f"Acionando fallback automático com Placa + Chassi ({chassi_limpo})..."
+                    )
+                    return self.consultar_detran(
+                        placa_limpa,
+                        renavam_limpo,
+                        consultar_lic,
+                        consultar_multas,
+                        tentativa_atual=tentativa_atual,
+                        chassi=chassi_limpo,
+                        usar_chassi=True
+                    )
                 return DetranResultado(
                     "Não Localizado" if consultar_lic else "-",
                     "Não Localizado" if consultar_multas else "-",
                     "Não Localizado" if consultar_multas else "-",
-                    "Não Localizado" if consultar_multas else "-"
+                    "Não Localizado" if consultar_multas else "-",
+                    usou_chassi=usar_chassi
                 )
 
             # Helper interno seguro para fechar o modal compartilhado do Detran-CE
@@ -299,14 +361,12 @@ class FrotaScraperEngine:
                                 By.XPATH, "//*[@id='outros-servicos-modal']//tr[contains(., 'TOTAL')]/td[last()]"
                             )))
                             texto_lic = el_total_lic.text.strip()
-                            from core.data_processor import formatar_moeda_float
                             if not texto_lic or formatar_moeda_float(texto_lic) == 0.0 or texto_lic == "R$ 0,00":
                                 val_lic = "PAGO"
                             else:
                                 val_lic = texto_lic
 
                         # Captura possíveis AITs das multas vencidas embutidas no licenciamento
-                        import re
                         linhas_lic = self.driver.find_elements(By.XPATH, "//*[@id='outros-servicos-modal']//table//tr")
                         for tr in linhas_lic:
                             texto_tr = tr.text.strip().upper()
@@ -355,9 +415,6 @@ class FrotaScraperEngine:
                             soma_multas_a_vencer = 0.0
                             soma_multas_vencidas = 0.0
                             encontrou_multas = False
-
-                            from core.data_processor import formatar_moeda_float, formatar_float_moeda
-                            from datetime import datetime
                             hoje = datetime.now().date()
 
                             for linha in linhas_multa:
@@ -425,45 +482,85 @@ class FrotaScraperEngine:
                 finally:
                     fechar_modal_se_aberto()
 
-            return DetranResultado(val_lic, val_multas, val_multas_a_vencer, val_multas_vencidas)
+            return DetranResultado(val_lic, val_multas, val_multas_a_vencer, val_multas_vencidas, usou_chassi=usar_chassi)
 
         except (WebDriverException, Exception) as e:
             logger.warning(f"Erro ao consultar Detran para {placa} (Tentativa {tentativa_atual}): {e}")
             if tentativa_atual == 1:
                 # Auto-heal: reinicia o navegador e tenta mais uma vez
                 self.reiniciar()
-                return self.consultar_detran(placa, renavam, consultar_lic, consultar_multas, tentativa_atual=2)
+                return self.consultar_detran(
+                    placa, renavam, consultar_lic, consultar_multas,
+                    tentativa_atual=2, chassi=chassi, usar_chassi=usar_chassi
+                )
+            if not usar_chassi and chassi_limpo:
+                logger.info(f"Detran-CE: Tentando fallback com Placa + Chassi após erro para {placa_limpa}...")
+                return self.consultar_detran(
+                    placa, renavam, consultar_lic, consultar_multas,
+                    tentativa_atual=2, chassi=chassi_limpo, usar_chassi=True
+                )
             return DetranResultado(
                 "Falha Detran" if consultar_lic else "-",
                 "Falha Detran" if consultar_multas else "-",
                 "Falha Detran" if consultar_multas else "-",
-                "Falha Detran" if consultar_multas else "-"
+                "Falha Detran" if consultar_multas else "-",
+                usou_chassi=usar_chassi
             )
 
-    def consultar_sefaz_ipva(self, placa: str, renavam: str, tentativa_atual: int = 1) -> str:
+    def consultar_sefaz_ipva(
+        self,
+        placa: str,
+        renavam: str,
+        tentativa_atual: int = 1,
+        chassi: str = "",
+        usar_apenas_chassi: bool = False
+    ) -> str:
         """
         Consulta o saldo de IPVA em aberto na Sefaz-CE com detecção precoce de veículos quitados.
-        Diferencia veículos regulares (R$ 0,00) de falhas/erros de conexão.
-        Possui auto-heal se o navegador travar.
+        Se o RENAVAM estiver incorreto, ausente ou retornar 'Veículo não encontrado', realiza
+        fallback pesquisando apenas pelo Chassi no portal da Sefaz-CE.
         """
         url_sefaz = "https://ipva.sefaz.ce.gov.br/#/impostos/emitir-dae"
+        from core.data_processor import sanitizar_chassi
+        placa_limpa = str(placa).strip().upper()
+        renavam_limpo = str(renavam).strip()
+        chassi_limpo = sanitizar_chassi(chassi)
+
+        renavam_valido = bool(renavam_limpo) and renavam_limpo.isdigit() and int(renavam_limpo) > 0
+        if not usar_apenas_chassi and not renavam_valido and chassi_limpo:
+            usar_apenas_chassi = True
+
+        self.ultimo_ipva_usou_chassi = usar_apenas_chassi
+
         try:
             if not self.driver:
                 self.iniciar()
 
+            if usar_apenas_chassi:
+                # Limpa o estado Angular anterior (ex: snackbar 'Veículo não encontrado')
+                self.driver.get("about:blank")
+                time.sleep(0.15)
+
             self.driver.get(url_sefaz)
 
-            # 1. Preenche Placa
-            xpath_placa = "//input[contains(@ng-model, 'placa') or @name='placa' or @formcontrolname='placa' or @id='mat-input-1']"
-            inp_placa = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_placa)))
-            inp_placa.clear()
-            inp_placa.send_keys(str(placa).strip().upper())
+            if usar_apenas_chassi and chassi_limpo:
+                # Pesquisa usando APENAS o Chassi no site da Sefaz-CE
+                xpath_chassi = "//input[contains(@ng-model, 'chassi') or @name='chassi' or @formcontrolname='chassi' or @id='mat-input-0']"
+                inp_chassi = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_chassi)))
+                inp_chassi.clear()
+                inp_chassi.send_keys(chassi_limpo)
+            else:
+                # 1. Preenche Placa
+                xpath_placa = "//input[contains(@ng-model, 'placa') or @name='placa' or @formcontrolname='placa' or @id='mat-input-1']"
+                inp_placa = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_placa)))
+                inp_placa.clear()
+                inp_placa.send_keys(placa_limpa)
 
-            # 2. Preenche RENAVAM
-            xpath_renavam = "//input[contains(@ng-model, 'renavam') or @name='renavam' or @formcontrolname='renavam' or @id='mat-input-2']"
-            inp_renavam = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_renavam)))
-            inp_renavam.clear()
-            inp_renavam.send_keys(str(renavam).strip())
+                # 2. Preenche RENAVAM
+                xpath_renavam = "//input[contains(@ng-model, 'renavam') or @name='renavam' or @formcontrolname='renavam' or @id='mat-input-2']"
+                inp_renavam = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_renavam)))
+                inp_renavam.clear()
+                inp_renavam.send_keys(renavam_limpo)
 
             # 3. Clica em Pesquisar
             xpath_btn = "//button[contains(translate(., 'pesquisar', 'PESQUISAR'), 'PESQUISAR') or contains(@class, 'search-button')]"
@@ -483,8 +580,20 @@ class FrotaScraperEngine:
 
             self.wait.until(resposta_pronta)
 
-            # Se acusar não encontrado
-            if self.driver.find_elements(By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'Não há registro')]"):
+            # Se acusar não encontrado ou inválido
+            if self.driver.find_elements(By.XPATH, "//*[contains(text(), 'não encontrado') or contains(text(), 'inválido') or contains(text(), 'Não há registro')]"):
+                if not usar_apenas_chassi and chassi_limpo:
+                    logger.info(
+                        f"Sefaz-CE: Placa {placa_limpa} / RENAVAM {renavam_limpo} não localizado. "
+                        f"Acionando fallback automático apenas pelo Chassi ({chassi_limpo})..."
+                    )
+                    return self.consultar_sefaz_ipva(
+                        placa_limpa,
+                        renavam_limpo,
+                        tentativa_atual=tentativa_atual,
+                        chassi=chassi_limpo,
+                        usar_apenas_chassi=True
+                    )
                 return "Não Localizado"
 
             # Se não há tabela de não quitados, encerra como PAGO imediatamente
@@ -495,7 +604,6 @@ class FrotaScraperEngine:
             xpath_valor = "//td[contains(., 'Em aberto')]/preceding-sibling::td[contains(., 'R$')][1]"
             el_valor = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_valor)))
             txt_ipva = el_valor.text.strip()
-            from core.data_processor import formatar_moeda_float
             if not txt_ipva or formatar_moeda_float(txt_ipva) == 0.0 or txt_ipva == "R$ 0,00":
                 return "PAGO"
             return txt_ipva
@@ -505,5 +613,12 @@ class FrotaScraperEngine:
             if tentativa_atual == 1:
                 # Auto-heal: reinicia o navegador e tenta mais uma vez
                 self.reiniciar()
-                return self.consultar_sefaz_ipva(placa, renavam, tentativa_atual=2)
+                return self.consultar_sefaz_ipva(
+                    placa, renavam, tentativa_atual=2, chassi=chassi, usar_apenas_chassi=usar_apenas_chassi
+                )
+            if not usar_apenas_chassi and chassi_limpo:
+                logger.info(f"Sefaz-CE: Tentando fallback pelo Chassi após erro para {placa_limpa}...")
+                return self.consultar_sefaz_ipva(
+                    placa, renavam, tentativa_atual=2, chassi=chassi_limpo, usar_apenas_chassi=True
+                )
             return "Falha Sefaz"

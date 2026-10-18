@@ -11,6 +11,7 @@ import sys
 import time
 import base64
 import shutil
+import tempfile
 import subprocess
 from datetime import datetime
 from selenium import webdriver
@@ -22,7 +23,6 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
-from webdriver_manager.chrome import ChromeDriverManager
 
 from core.data_processor import obter_ultimo_dia_util_mes, obter_proximo_dia_util
 from core.scraper_engine import obter_caminho_chromedriver
@@ -49,6 +49,7 @@ class FrotaBoletoDownloader:
         self.pasta_destino_final = os.path.join(self.pasta_base_destino, self.nome_pasta_boletos)
         
         self.pasta_temp_downloads = os.path.join(self.pasta_destino_final, ".temp_downloads")
+        self.temp_user_data_dir: str | None = None
         self.driver: webdriver.Chrome | None = None
         self.wait: WebDriverWait | None = None
         self.cancelar_solicitado = False
@@ -68,6 +69,12 @@ class FrotaBoletoDownloader:
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-popup-blocking")
         chrome_options.add_argument("--log-level=3")
+
+        try:
+            self.temp_user_data_dir = tempfile.mkdtemp(prefix="chrome_boleto_")
+            chrome_options.add_argument(f"--user-data-dir={self.temp_user_data_dir}")
+        except Exception:
+            self.temp_user_data_dir = None
 
         # Configurações do Chrome para salvar PDFs diretamente sem abrir o visualizador interno
         prefs = {
@@ -104,6 +111,13 @@ class FrotaBoletoDownloader:
             self.driver = None
             self.wait = None
         
+        if self.temp_user_data_dir and os.path.exists(self.temp_user_data_dir):
+            try:
+                shutil.rmtree(self.temp_user_data_dir, ignore_errors=True)
+            except Exception:
+                pass
+            self.temp_user_data_dir = None
+
         # Limpa pasta temporária
         if os.path.exists(self.pasta_temp_downloads):
             try:
@@ -259,15 +273,33 @@ class FrotaBoletoDownloader:
         self._fechar_janelas_extras(janela_principal)
         return False
 
-    def baixar_boleto_licenciamento(self, placa: str, renavam: str) -> tuple[bool, str]:
+    def baixar_boleto_licenciamento(
+        self,
+        placa: str,
+        renavam: str,
+        chassi: str = "",
+        usar_chassi: bool = False
+    ) -> tuple[bool, str]:
         """
         Gera e faz o download do boleto de Licenciamento no Detran-CE.
         Trata casos padrão e casos com débitos de IPVA em aberto (que abrem extrato para impressão),
         salvando como PDF fiel através de renderização nativa de impressão ('Salvar como PDF').
+        Se o RENAVAM estiver incorreto ou ausente, realiza fallback automático usando Placa + Chassi.
         Retorna (sucesso: bool, mensagem_ou_caminho: str).
         """
         self._limpar_pasta_temp()
-        nome_arquivo_final = f"{placa} LICENCIAMENTO {self.data_hoje_str}.pdf"
+        from core.data_processor import sanitizar_chassi
+        placa_limpa = str(placa).strip().upper()
+        renavam_limpo = str(renavam).strip()
+        chassi_limpo = sanitizar_chassi(chassi)
+
+        renavam_valido = bool(renavam_limpo) and renavam_limpo.isdigit() and int(renavam_limpo) > 0
+        if not usar_chassi and not renavam_valido and chassi_limpo:
+            usar_chassi = True
+
+        credencial_busca = chassi_limpo if (usar_chassi and chassi_limpo) else renavam_limpo
+
+        nome_arquivo_final = f"{placa_limpa} LICENCIAMENTO {self.data_hoje_str}.pdf"
         destino_final = os.path.join(self.pasta_destino_final, nome_arquivo_final)
 
         url_detran = "https://sistemas.detran.ce.gov.br/central/#veiculo"
@@ -286,15 +318,27 @@ class FrotaBoletoDownloader:
             self.wait.until(lambda d: len([i for i in d.find_elements(By.TAG_NAME, "input") if i.is_displayed()]) >= 2)
             inputs = [i for i in self.driver.find_elements(By.TAG_NAME, "input") if i.is_displayed()]
             inputs[0].clear()
-            inputs[0].send_keys(placa)
+            inputs[0].send_keys(placa_limpa)
             inputs[1].clear()
-            inputs[1].send_keys(renavam)
+            inputs[1].send_keys(credencial_busca)
 
             btn_confirmar = self.wait.until(
                 EC.presence_of_element_located((By.XPATH, "//button[contains(text(), 'CONFIRMAR') or @id='submit-veiculo']"))
             )
             self._clicar_seguro(btn_confirmar)
             time.sleep(1.5)
+
+            # Verifica se houve erro de veículo não encontrado para acionar fallback por Chassi
+            alertas = [
+                a for a in self.driver.find_elements(
+                    By.XPATH,
+                    "//*[contains(@class, 'msg-validacao') or contains(text(), 'não encontrado') "
+                    "or contains(text(), 'Inexistente') or contains(text(), 'Dados incorretos')]"
+                ) if a.is_displayed() and a.text.strip()
+            ]
+            if alertas and not usar_chassi and chassi_limpo:
+                logger.info(f"Boleto Detran-CE ({placa_limpa}): RENAVAM não localizado, tentando Placa + Chassi ({chassi_limpo})...")
+                return self.baixar_boleto_licenciamento(placa_limpa, renavam_limpo, chassi=chassi_limpo, usar_chassi=True)
 
             # Verifica se há link para emissão de licenciamento
             link_lic = [
@@ -306,6 +350,8 @@ class FrotaBoletoDownloader:
                 ) if l.is_displayed()
             ]
             if not link_lic:
+                if not usar_chassi and chassi_limpo:
+                    return self.baixar_boleto_licenciamento(placa_limpa, renavam_limpo, chassi=chassi_limpo, usar_chassi=True)
                 return False, "Nenhum boleto de licenciamento em aberto disponível."
 
             self._clicar_seguro(link_lic[0])
@@ -320,7 +366,7 @@ class FrotaBoletoDownloader:
                         cd.clear()
                         cd.send_keys(data_limite)
                         time.sleep(0.3)
-                        logger.info(f"Vencimento do Licenciamento ({placa}) ajustado: {data_limite}")
+                        logger.info(f"Vencimento do Licenciamento ({placa_limpa}) ajustado: {data_limite}")
                         break
             except Exception as e:
                 logger.debug(f"Aviso ao verificar campo data_vencimento: {e}")
@@ -347,7 +393,9 @@ class FrotaBoletoDownloader:
                 return False, "Não foi possível gerar ou salvar o boleto do Detran."
 
         except Exception as e:
-            logger.error(f"Erro ao baixar licenciamento {placa}: {e}")
+            logger.error(f"Erro ao baixar licenciamento {placa_limpa}: {e}")
+            if not usar_chassi and chassi_limpo:
+                return self.baixar_boleto_licenciamento(placa_limpa, renavam_limpo, chassi=chassi_limpo, usar_chassi=True)
             return False, f"Falha: {e}"
         finally:
             try:
@@ -362,31 +410,57 @@ class FrotaBoletoDownloader:
             except Exception:
                 pass
 
-    def baixar_dae_ipva(self, placa: str, renavam: str) -> tuple[bool, str]:
+    def baixar_dae_ipva(
+        self,
+        placa: str,
+        renavam: str,
+        chassi: str = "",
+        usar_apenas_chassi: bool = False
+    ) -> tuple[bool, str]:
         """
         Gera e faz o download do DAE de IPVA na Sefaz-CE.
+        Se o RENAVAM estiver incorreto ou ausente, realiza fallback pesquisando apenas pelo Chassi.
         Retorna (sucesso: bool, mensagem_ou_caminho: str).
         """
         self._limpar_pasta_temp()
-        nome_arquivo_final = f"{placa} IPVA {self.data_hoje_str}.pdf"
+        from core.data_processor import sanitizar_chassi
+        placa_limpa = str(placa).strip().upper()
+        renavam_limpo = str(renavam).strip()
+        chassi_limpo = sanitizar_chassi(chassi)
+
+        renavam_valido = bool(renavam_limpo) and renavam_limpo.isdigit() and int(renavam_limpo) > 0
+        if not usar_apenas_chassi and not renavam_valido and chassi_limpo:
+            usar_apenas_chassi = True
+
+        nome_arquivo_final = f"{placa_limpa} IPVA {self.data_hoje_str}.pdf"
         destino_final = os.path.join(self.pasta_destino_final, nome_arquivo_final)
 
         url_sefaz = "https://ipva.sefaz.ce.gov.br/#/impostos/emitir-dae"
         try:
+            if usar_apenas_chassi:
+                self.driver.get("about:blank")
+                time.sleep(0.15)
             self.driver.get(url_sefaz)
             janela_principal = self.driver.current_window_handle
 
-            inp_placa = self.wait.until(EC.visibility_of_element_located((
-                By.XPATH, "//input[contains(@ng-model, 'placa') or @name='placa' or @formcontrolname='placa' or @id='mat-input-1']"
-            )))
-            inp_placa.clear()
-            inp_placa.send_keys(placa)
+            if usar_apenas_chassi and chassi_limpo:
+                inp_chassi = self.wait.until(EC.visibility_of_element_located((
+                    By.XPATH, "//input[contains(@ng-model, 'chassi') or @name='chassi' or @formcontrolname='chassi' or @id='mat-input-0']"
+                )))
+                inp_chassi.clear()
+                inp_chassi.send_keys(chassi_limpo)
+            else:
+                inp_placa = self.wait.until(EC.visibility_of_element_located((
+                    By.XPATH, "//input[contains(@ng-model, 'placa') or @name='placa' or @formcontrolname='placa' or @id='mat-input-1']"
+                )))
+                inp_placa.clear()
+                inp_placa.send_keys(placa_limpa)
 
-            inp_renavam = self.wait.until(EC.visibility_of_element_located((
-                By.XPATH, "//input[contains(@ng-model, 'renavam') or @name='renavam' or @formcontrolname='renavam' or @id='mat-input-2']"
-            )))
-            inp_renavam.clear()
-            inp_renavam.send_keys(renavam)
+                inp_renavam = self.wait.until(EC.visibility_of_element_located((
+                    By.XPATH, "//input[contains(@ng-model, 'renavam') or @name='renavam' or @formcontrolname='renavam' or @id='mat-input-2']"
+                )))
+                inp_renavam.clear()
+                inp_renavam.send_keys(renavam_limpo)
 
             btn_pesquisar = self.wait.until(EC.element_to_be_clickable((
                 By.XPATH, "//button[contains(translate(., 'pesquisar', 'PESQUISAR'), 'PESQUISAR') or contains(@class, 'search-button')]"
@@ -396,6 +470,9 @@ class FrotaBoletoDownloader:
 
             # Verifica se há débitos não quitados
             if not self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Débitos de IPVA não quitados')]"):
+                if not usar_apenas_chassi and chassi_limpo:
+                    logger.info(f"Boleto Sefaz-CE ({placa_limpa}): Tentando fallback apenas pelo Chassi ({chassi_limpo})...")
+                    return self.baixar_dae_ipva(placa_limpa, renavam_limpo, chassi=chassi_limpo, usar_apenas_chassi=True)
                 return False, "Nenhum débito de IPVA em aberto para este veículo."
 
             # Ajusta campo 'Pagar em' para o último dia útil do mês
@@ -410,7 +487,7 @@ class FrotaBoletoDownloader:
                     cp.send_keys(data_vencimento)
                     cp.send_keys(Keys.TAB)
                     time.sleep(0.5)
-                    logger.info(f"Vencimento do IPVA ({placa}) definido para o último dia útil do mês: {data_vencimento}")
+                    logger.info(f"Vencimento do IPVA ({placa_limpa}) definido para o último dia útil do mês: {data_vencimento}")
             except Exception as e:
                 logger.warning(f"Não foi possível ajustar a data de vencimento do IPVA: {e}")
 
@@ -445,5 +522,7 @@ class FrotaBoletoDownloader:
                 return False, "Tempo esgotado aguardando download ou geração do DAE."
 
         except Exception as e:
-            logger.error(f"Erro ao baixar IPVA {placa}: {e}")
+            logger.error(f"Erro ao baixar IPVA {placa_limpa}: {e}")
+            if not usar_apenas_chassi and chassi_limpo:
+                return self.baixar_dae_ipva(placa_limpa, renavam_limpo, chassi=chassi_limpo, usar_apenas_chassi=True)
             return False, f"Falha: {e}"

@@ -1358,6 +1358,7 @@ class JanelaDownloadBoletos(tk.Toplevel):
     def _identificar_debitos(self):
         self.itens_boletos.clear()
         total_veiculos = len(self.df_frota)
+        col_chassi = FrotaDataProcessor.localizar_coluna_chassi(self.df_frota)
 
         for i in range(total_veiculos):
             dados = self.resultados_memoria.get(i, {})
@@ -1374,11 +1375,17 @@ class JanelaDownloadBoletos(tk.Toplevel):
                 row = self.df_frota.loc[i]
                 placa = str(row[self.col_placa]).strip().upper()
                 renavam = str(row[self.col_renavam]).strip()
+                chassi = (
+                    str(row[col_chassi]).strip()
+                    if (col_chassi and col_chassi in self.df_frota.columns and pd.notna(row[col_chassi]))
+                    else ""
+                )
 
                 self.itens_boletos.append({
                     "index": i,
                     "placa": placa,
                     "renavam": renavam,
+                    "chassi": chassi,
                     "val_lic_str": lic_str if tem_lic else "-",
                     "val_ipva_str": ipva_str if tem_ipva else "-",
                     "tem_lic": tem_lic,
@@ -1626,6 +1633,7 @@ class JanelaDownloadBoletos(tk.Toplevel):
 
                     placa = item["placa"]
                     renavam = item["renavam"]
+                    chassi = item.get("chassi", "")
                     lbl_tipo = "Licenciamento" if tipo == "lic" else "IPVA"
 
                     concluidos = len(self.tarefas_executadas_sucesso)
@@ -1641,9 +1649,9 @@ class JanelaDownloadBoletos(tk.Toplevel):
                         ))
 
                     if tipo == "lic":
-                        sucesso, msg = self.downloader.baixar_boleto_licenciamento(placa, renavam)
+                        sucesso, msg = self.downloader.baixar_boleto_licenciamento(placa, renavam, chassi=chassi)
                     else:
-                        sucesso, msg = self.downloader.baixar_dae_ipva(placa, renavam)
+                        sucesso, msg = self.downloader.baixar_dae_ipva(placa, renavam, chassi=chassi)
 
                     if sucesso:
                         self.tarefas_executadas_sucesso.add((item["index"], tipo))
@@ -1790,6 +1798,7 @@ class AppConsultaFrotaGUI:
         self.df_carregado: pd.DataFrame | None = None
         self.col_placa = "Placa"
         self.col_renavam = "RENAVAM"
+        self.col_chassi: str | None = None
         self.resultados_memoria: dict[int, dict] = {}
         self.indices_em_falha: list[int] = []
 
@@ -2527,14 +2536,17 @@ class AppConsultaFrotaGUI:
         renavam = str(row[self.col_renavam]).strip()
 
         colunas_ignorar = {
-            self.col_placa, self.col_renavam,
+            self.col_placa, self.col_renavam, self.col_chassi,
             "Valor_Licenciamento", "Valor_IPVA", "Valor_Multas",
             "Total_a_Pagar", "Status", "Data_Consulta"
         }
         extras = {
             str(col): str(row[col])
             for col in self.df_carregado.columns
-            if col not in colunas_ignorar and pd.notna(row[col])
+            if col not in colunas_ignorar
+            and not any(k in str(col).strip().upper() for k in ["CHASSI", "CHASSIS", "UNNAMED"])
+            and str(col).strip().upper() != "VIN"
+            and pd.notna(row[col])
         }
         fin = self.resultados_memoria.get(idx, {"lic": "-", "ipva": "-", "multas": "-"})
         JanelaRaioXVeiculo(
@@ -2754,6 +2766,7 @@ class AppConsultaFrotaGUI:
             self.df_carregado = df
             self.col_placa = col_p
             self.col_renavam = col_r
+            self.col_chassi = FrotaDataProcessor.localizar_coluna_chassi(df)
 
             ConfigManager.adicionar_arquivo_recente(caminho)
 
@@ -3150,6 +3163,11 @@ class AppConsultaFrotaGUI:
                         row = df.loc[idx]
                         placa = str(row[self.col_placa]).strip().upper()
                         renavam = str(row[self.col_renavam]).strip()
+                        chassi = (
+                            str(row[self.col_chassi]).strip()
+                            if (self.col_chassi and self.col_chassi in df.columns and pd.notna(row[self.col_chassi]))
+                            else ""
+                        )
 
                         self.root.after(0, self._marcar_linha_processando, idx, placa, renavam)
 
@@ -3169,7 +3187,7 @@ class AppConsultaFrotaGUI:
                         else:
                             if consultar_lic or consultar_multas:
                                 res_detran = scraper.consultar_detran(
-                                    placa, renavam, consultar_lic, consultar_multas
+                                    placa, renavam, consultar_lic, consultar_multas, chassi=chassi
                                 )
                                 val_detran_lic = res_detran[0]
                                 if str(val_detran_lic).strip() in ["R$ 0,00", "0,00"]:
@@ -3180,7 +3198,7 @@ class AppConsultaFrotaGUI:
                                 time.sleep(0.3)
 
                             if consultar_ipva:
-                                val_sefaz_ipva = scraper.consultar_sefaz_ipva(placa, renavam)
+                                val_sefaz_ipva = scraper.consultar_sefaz_ipva(placa, renavam, chassi=chassi)
                                 if str(val_sefaz_ipva).strip() in ["R$ 0,00", "0,00"]:
                                     val_sefaz_ipva = "PAGO"
                                 time.sleep(0.3)

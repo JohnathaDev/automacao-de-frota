@@ -4,8 +4,13 @@ Regras financeiras de formatação para relatórios e exibição.
 """
 import os
 import re
+import calendar
 from datetime import datetime, timedelta
 import pandas as pd
+
+from core.logger_config import obter_logger
+
+logger = obter_logger("DataProcessor")
 
 # Padrão oficial de placas veiculares brasileiras (Mercosul e Tradicional)
 PADRAO_PLACA = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$|^[A-Z]{3}[0-9]{4}$")
@@ -93,7 +98,6 @@ def calcular_total_a_pagar_veiculo(
         return round(val_ipva_f + val_multas_f, 2)
 
 
-
 def obter_estilo_financeiro(valor_float: float, is_licenciamento: bool = False) -> tuple[bool, bool, str | None]:
     """
     Retorna regras de estilo financeiro cumulativas:
@@ -116,9 +120,6 @@ def obter_estilo_financeiro(valor_float: float, is_licenciamento: bool = False) 
         color_hex = "#DC2626"
 
     return bold, underline, color_hex
-
-
-import calendar
 
 
 def obter_ultimo_dia_util_mes(data_base: datetime | None = None) -> str:
@@ -150,8 +151,107 @@ def obter_proximo_dia_util(data_base: datetime | None = None) -> str:
     return obter_ultimo_dia_util_mes(data_base)
 
 
+def extrair_placa_limpa(val: str) -> str:
+    """
+    Extrai apenas a Placa válida (Mercosul ou Tradicional) mesmo quando a célula
+    contém textos extras, símbolos, hífens, pontos ou múltiplos caracteres.
+    """
+    if val is None or pd.isna(val):
+        return ""
+    val_str = str(val).strip().upper()
+    if val_str in ["NAN", "NONE", "", "N/A", "-", "NULL"]:
+        return ""
+
+    # 1. Busca padrão de placa isolado ou cercado por delimitadores/textos
+    m = re.search(r"(?<![A-Z0-9])([A-Z]{3})[\s\-\._/]*([0-9][A-Z0-9][0-9]{2})(?![A-Z0-9])", val_str)
+    if m:
+        return f"{m.group(1)}{m.group(2)}"
+
+    # 2. Fallback: remove caracteres especiais e verifica padrão
+    limpo = re.sub(r"[^A-Z0-9]", "", val_str)
+    m2 = re.search(r"([A-Z]{3}[0-9][A-Z0-9][0-9]{2}|[A-Z]{3}[0-9]{4})", limpo)
+    if m2 and len(limpo) == 7:
+        return m2.group(1)
+    return limpo
+
+
+def sanitizar_renavam(val: str) -> str:
+    """
+    Extrai e higieniza o código RENAVAM (11 dígitos com zeros à esquerda),
+    ignorando textos, rótulos, pontuações ou caracteres extras na célula.
+    """
+    if val is None or pd.isna(val):
+        return ""
+    val_str = str(val).strip()
+    if val_str.upper() in ["NAN", "NONE", "", "N/A", "-", "NULL"]:
+        return ""
+    if val_str.endswith(".0"):
+        val_str = val_str[:-2]
+
+    # Se houver pontuação de milhar/dígito (ex: 01.486.619.662-0), unifica dígitos próximos
+    sem_pontuacao_num = re.sub(r"(?<=\d)[\.\-\s/](?=\d)", "", val_str)
+
+    # Prioriza sequências numéricas de 9 a 11 dígitos caso haja outros números no texto da célula
+    candidatos = re.findall(r"(?<!\d)\d{9,11}(?!\d)", sem_pontuacao_num)
+    if candidatos:
+        return candidatos[0].zfill(11)
+
+    digitos = "".join(c for c in sem_pontuacao_num if c.isdigit())
+    if digitos and len(digitos) <= 11:
+        return digitos.zfill(11)
+    return digitos
+
+
+def sanitizar_chassi(val: str) -> str:
+    """
+    Extrai e higieniza o código do Chassi (VIN) do veículo (tipicamente 17 caracteres alfanuméricos),
+    removendo rótulos, espaços ou símbolos extras.
+    """
+    if val is None or pd.isna(val):
+        return ""
+    val_str = str(val).strip().upper()
+    if val_str in ["NAN", "NONE", "", "N/A", "-", "NULL"]:
+        return ""
+
+    # Procura token alfanumérico de 17 caracteres (padrão internacional VIN/Chassi)
+    candidatos_17 = re.findall(r"(?<![A-Z0-9])[A-Z0-9]{17}(?![A-Z0-9])", val_str)
+    if candidatos_17:
+        return candidatos_17[0]
+
+    limpo = re.sub(r"[^A-Z0-9]", "", val_str)
+    if len(limpo) >= 7:
+        return limpo[:25]
+    return ""
+
+
 class FrotaDataProcessor:
     """Higienização de dados, validação de regras de frota e consolidação."""
+
+    @staticmethod
+    def localizar_coluna_chassi(df: pd.DataFrame) -> str | None:
+        """Detecta automaticamente se a planilha possui coluna de Chassi do veículo."""
+        if df is None or df.empty:
+            return None
+
+        for col in df.columns:
+            nome_norm = re.sub(r"[^A-Z0-9]", "", str(col).strip().upper())
+            if any(termo in nome_norm for termo in ["CHASSI", "CHASSIS", "VIN"]):
+                return col
+
+        # Fallback por inspeção de conteúdo: coluna com códigos VIN de 17 caracteres alfanuméricos (com letras e números)
+        for col in df.columns:
+            nome_norm = re.sub(r"[^A-Z0-9]", "", str(col).strip().upper())
+            if any(t in nome_norm for t in ["PLACA", "RENAVAM", "RENAVAN", "RNV", "PROPRIET", "CLIENTE", "STATUS", "VALOR", "TOTAL"]):
+                continue
+            amostra = [sanitizar_chassi(v) for v in df[col].dropna().head(10)]
+            validos_17 = [
+                v for v in amostra
+                if len(v) == 17 and any(c.isalpha() for c in v) and any(c.isdigit() for c in v)
+            ]
+            if validos_17 and len(validos_17) >= max(1, len(amostra) // 2):
+                return col
+
+        return None
 
     @staticmethod
     def localizar_colunas_chave(df: pd.DataFrame) -> tuple[str, str]:
@@ -171,6 +271,30 @@ class FrotaDataProcessor:
                 col_renavam = col_original
                 break
 
+        # Fallback heurístico caso a planilha tenha cabeçalhos atípicos ou vários caracteres
+        if not col_placa:
+            for col in df.columns:
+                if col == col_renavam:
+                    continue
+                amostra = [extrair_placa_limpa(v) for v in df[col].dropna().head(15)]
+                placas_validas = [p for p in amostra if PADRAO_PLACA.match(p)]
+                if placas_validas and len(placas_validas) >= max(1, len(amostra) // 2):
+                    col_placa = col
+                    break
+
+        if not col_renavam:
+            for col in df.columns:
+                if col == col_placa:
+                    continue
+                nome_u = str(col).strip().upper()
+                if any(t in nome_u for t in ["CHASSI", "CHASSIS", "VIN", "PROPRIET", "CLIENTE"]):
+                    continue
+                amostra = [sanitizar_renavam(v) for v in df[col].dropna().head(15)]
+                rens_validos = [r for r in amostra if len(r) == 11 and r.isdigit()]
+                if rens_validos and len(rens_validos) >= max(1, len(amostra) // 2):
+                    col_renavam = col
+                    break
+
         if not col_placa or not col_renavam:
             faltantes = []
             if not col_placa:
@@ -188,49 +312,80 @@ class FrotaDataProcessor:
     def carregar_planilha(cls, caminho_arquivo: str) -> tuple[pd.DataFrame, str, str]:
         """
         Carrega a planilha Excel assegurando que:
+        - Planilhas com títulos no topo ou várias colunas/caracteres extras sejam suportadas
         - Linhas vazias sejam removidas
         - Valores de RENAVAM não percam zeros à esquerda (zfill 11)
-        - Placas sejam higienizadas
+        - Placas sejam higienizadas (extraindo apenas a placa limpa)
+        - Caso exista coluna de Chassi, ela seja higienizada e preservada em memória para fallback,
+          mas colunas irrelevantes de ruído sejam filtradas.
         """
         df = pd.read_excel(caminho_arquivo, dtype=str)
         if len(df) == 0:
             raise ValueError("O arquivo Excel selecionado não contém nenhum registro.")
 
-        col_placa, col_renavam = cls.localizar_colunas_chave(df)
+        # Se o cabeçalho real estiver abaixo da primeira linha (ex: planilhas com título no topo)
+        try:
+            col_placa, col_renavam = cls.localizar_colunas_chave(df)
+        except ValueError:
+            df_raw = pd.read_excel(caminho_arquivo, dtype=str, header=None)
+            linha_cabecalho = None
+            for idx_row in range(min(10, len(df_raw))):
+                valores_linha = [str(v).strip().upper() for v in df_raw.iloc[idx_row].values if pd.notna(v)]
+                texto_linha = " ".join(valores_linha)
+                if "PLACA" in texto_linha and any(t in texto_linha for t in ["RENAVAM", "RENAVAN", "RNV", "CHASSI"]):
+                    linha_cabecalho = idx_row
+                    break
+            if linha_cabecalho is not None:
+                df = pd.read_excel(caminho_arquivo, dtype=str, header=linha_cabecalho)
+            col_placa, col_renavam = cls.localizar_colunas_chave(df)
 
-        # 1. Remove linhas onde placa ou renavam são nulos
-        df = df.dropna(subset=[col_placa, col_renavam]).copy()
+        col_chassi = cls.localizar_coluna_chassi(df)
 
-        # 2. Higienização de Placa (remove hífens, espaços e transforma em maiúsculo)
-        df[col_placa] = (
-            df[col_placa]
-            .astype(str)
-            .str.strip()
-            .str.upper()
-            .str.replace("-", "", regex=False)
-            .str.replace(" ", "", regex=False)
-        )
+        # 1. Remove linhas onde placa é nula
+        df = df.dropna(subset=[col_placa]).copy()
+
+        # 2. Higienização de Placa (extrai apenas a placa limpa mesmo com textos/caracteres ao redor)
+        df[col_placa] = df[col_placa].apply(extrair_placa_limpa)
 
         # 3. Higienização de RENAVAM (preserva 11 dígitos com zeros à esquerda)
-        def sanitizar_renavam(val):
-            val_str = str(val).strip()
-            if val_str.endswith(".0"):
-                val_str = val_str[:-2]
-            digitos = "".join(c for c in val_str if c.isdigit())
-            if digitos and len(digitos) <= 11:
-                return digitos.zfill(11)
-            return digitos or val_str
-
         df[col_renavam] = df[col_renavam].apply(sanitizar_renavam)
 
-        # 4. Remove linhas com campos 'NAN', 'NONE', vazios ou hífens
-        df = df[
-            ~df[col_placa].isin(["NAN", "NONE", "", "N/A", "-", "NULL"]) &
-            ~df[col_renavam].isin(["NAN", "NONE", "", "N/A", "-", "NULL"])
-        ].copy()
+        # 4. Higienização de Chassi (se presente na planilha)
+        if col_chassi and col_chassi in df.columns:
+            df[col_chassi] = df[col_chassi].apply(sanitizar_chassi)
+
+        # 5. Remove linhas sem Placa válida ou sem ambos (RENAVAM e Chassi)
+        placas_invalidas = ["NAN", "NONE", "", "N/A", "-", "NULL"]
+        mask_placa_ok = ~df[col_placa].isin(placas_invalidas)
+        mask_ren_ok = ~df[col_renavam].isin(placas_invalidas)
+        if col_chassi and col_chassi in df.columns:
+            mask_chassi_ok = ~df[col_chassi].isin(placas_invalidas)
+            df = df[mask_placa_ok & (mask_ren_ok | mask_chassi_ok)].copy()
+            # Onde o RENAVAM estiver vazio mas houver Chassi, preenche com '-' para exibição
+            df[col_renavam] = df[col_renavam].apply(lambda r: r if r and r not in placas_invalidas else "-")
+        else:
+            df = df[mask_placa_ok & mask_ren_ok].copy()
 
         if len(df) == 0:
-            raise ValueError("Nenhum registro com Placa e RENAVAM válidos foi encontrado na planilha.")
+            raise ValueError("Nenhum registro com Placa e RENAVAM/Chassi válidos foi encontrado na planilha.")
+
+        # 6. Filtra colunas de ruído caso a planilha possua dezenas de colunas extras com caracteres diversos,
+        # mantendo apenas Proprietário/Cliente (se existir), Placa, RENAVAM, Chassi (para consulta) e colunas de auditoria
+        colunas_manter = []
+        col_prop_encontrada = False
+        colunas_auditoria = {"VALOR_LICENCIAMENTO", "VALOR_IPVA", "VALOR_MULTAS", "TOTAL_A_PAGAR", "STATUS", "DATA_CONSULTA"}
+        for c in df.columns:
+            cu = str(c).strip().upper()
+            if c in (col_placa, col_renavam, col_chassi):
+                colunas_manter.append(c)
+            elif cu in colunas_auditoria:
+                colunas_manter.append(c)
+            elif not col_prop_encontrada and any(t in cu for t in ["PROPRIET", "CLIENTE", "EMPRESA", "LOCAT"]):
+                colunas_manter.append(c)
+                col_prop_encontrada = True
+
+        if colunas_manter:
+            df = df[colunas_manter].copy()
 
         df = df.reset_index(drop=True)
         return df, col_placa, col_renavam
@@ -245,11 +400,22 @@ class FrotaDataProcessor:
         resultados_multas_a_vencer: list[str] | None = None
     ) -> pd.DataFrame:
         """
-        Constrói o DataFrame final preservando todas as colunas originais do usuário
+        Constrói o DataFrame final preservando as colunas de identificação (sem expor o Chassi nas descrições/saídas)
         e adicionando as colunas oficiais de débitos, total real a pagar e situação.
         Evita duplicação de multas vencidas já inclusas no Licenciamento.
         """
         df_final = df_original.iloc[:qtd_processada].copy()
+
+        # Remove a coluna de Chassi (e eventuais colunas Unnamed) na transferência para Excel/PDF
+        # para manter os relatórios exatamente no padrão atual
+        cols_remover = [
+            c for c in df_final.columns
+            if any(t in re.sub(r"[^A-Z0-9]", "", str(c).strip().upper()) for t in ["CHASSI", "CHASSIS", "VIN"])
+            or str(c).strip().upper().startswith("UNNAMED")
+        ]
+        if cols_remover:
+            df_final = df_final.drop(columns=cols_remover)
+
 
         def normalizar_valor_pago(v: str) -> str:
             v_str = str(v).strip()

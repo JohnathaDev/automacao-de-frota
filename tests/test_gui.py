@@ -207,6 +207,50 @@ class TestGUI(unittest.TestCase):
                             f"Colisão texto x barra em {bi_w}x{bi_h}: {bt} vs {bbar}"
                         )
 
+    def test_gui_raio_x_omite_chassi_e_repassa_boletos(self):
+        from unittest.mock import patch
+        import automacao_frota_gui as gui_com
+
+        df_frota = pd.DataFrame([
+            {
+                "PROPRIETÁRIO": "ALEXCO",
+                "PLACA": "PMY0362",
+                "RENAVAM": "01077542633",
+                "CHASSI": "9BD27805MGB109244"
+            }
+        ])
+        resultados = {0: {"lic": "R$ 199,66", "ipva": "R$ 850,00", "multas": "R$ 0,00"}}
+
+        janela_dl = JanelaDownloadBoletos(
+            parent=self.root,
+            df_frota=df_frota,
+            col_placa="PLACA",
+            col_renavam="RENAVAM",
+            resultados_memoria=resultados,
+            pasta_destino_base="temp_test_dir",
+            modo_noturno=False,
+            modo_headless=True
+        )
+        self.assertEqual(len(janela_dl.itens_boletos), 1)
+        self.assertEqual(janela_dl.itens_boletos[0]["chassi"], "9BD27805MGB109244")
+        janela_dl.destroy()
+
+        with patch.object(gui_com.AppConsultaFrotaGUI, "_carregar_planilha_automatica"), \
+             patch.object(gui_com, "JanelaRaioXVeiculo") as mock_raio_x:
+            app = gui_com.AppConsultaFrotaGUI(self.root)
+            app.df_carregado = df_frota
+            app.col_placa = "PLACA"
+            app.col_renavam = "RENAVAM"
+            app.col_chassi = "CHASSI"
+            app.resultados_memoria = resultados
+
+            app._abrir_modal_raio_x(0)
+            self.assertTrue(mock_raio_x.called)
+            kwargs = mock_raio_x.call_args.kwargs
+            self.assertIn("PROPRIETÁRIO", kwargs["dados_extras"])
+            self.assertNotIn("CHASSI", kwargs["dados_extras"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -306,6 +306,7 @@ class TestCore(unittest.TestCase):
         self.assertEqual(c_pago.fill.start_color.rgb, "00DCFCE7")
         self.assertEqual(c_pago.font.color.rgb, "00166534")
         self.assertTrue(c_pago.font.bold)
+        wb.close()
 
     def test_nomenclatura_dinamica_arquivos(self):
         # 1. Casos solicitados pelo usuário
@@ -530,7 +531,166 @@ class TestCore(unittest.TestCase):
         self.assertTrue(os.path.exists(arq_pdf_bi))
         self.assertGreater(os.path.getsize(arq_pdf_bi), 2500)
 
+    def test_planilha_caracteres_ruidosos_e_omissao_chassi(self):
+        from core.data_processor import extrair_placa_limpa, sanitizar_renavam, sanitizar_chassi
+        from openpyxl import load_workbook
+
+        self.assertEqual(extrair_placa_limpa("Placa: PMY-0362 (CE)"), "PMY0362")
+        self.assertEqual(extrair_placa_limpa(" [THN-8B35] * "), "THN8B35")
+        self.assertEqual(sanitizar_renavam("REN: 01.077.542.633"), "01077542633")
+        self.assertEqual(sanitizar_renavam("1092488635.0"), "01092488635")
+        self.assertEqual(sanitizar_chassi(" 9bd-27805.mgb109244 "), "9BD27805MGB109244")
+
+        # Cria planilha com caracteres ruidosos, colunas extras irrelevantes e coluna CHASSI
+        caminho_ruidoso = os.path.join(self.temp_dir, "frota_ruidosa_chassi.xlsx")
+        df_sujo = pd.DataFrame([
+            {
+                "PROPRIETÁRIO": "ALEXCO LOGISTICA",
+                "PLACA DO VEÍCULO": "Veíc: PMY-0362 (Ativo)",
+                "CÓD. RENAVAM": "REN# 1077.542.633-sp",
+                "CHASSI": "9BD27805MGB109244",
+                "OBSERVAÇÕES GERAIS": "Troca de óleo pendente ###",
+                "TELEFONE MOTORISTA": "(85) 99999-0000"
+            },
+            {
+                "PROPRIETÁRIO": "ALEXCO LOGISTICA",
+                "PLACA DO VEÍCULO": "[PNU-8135]",
+                "CÓD. RENAVAM": "00000000000",
+                "CHASSI": "9BWAB45U6GP057491",
+                "OBSERVAÇÕES GERAIS": "RENAVAM zerado na base",
+                "TELEFONE MOTORISTA": "(85) 98888-1111"
+            }
+        ])
+        df_sujo.to_excel(caminho_ruidoso, index=False)
+
+        df_lido, col_p, col_r = FrotaDataProcessor.carregar_planilha(caminho_ruidoso)
+        col_chassi = FrotaDataProcessor.localizar_coluna_chassi(df_lido)
+
+        self.assertEqual(len(df_lido), 2)
+        self.assertIsNotNone(col_chassi)
+        self.assertEqual(df_lido.loc[0, col_p], "PMY0362")
+        self.assertEqual(df_lido.loc[0, col_r], "01077542633")
+        self.assertEqual(df_lido.loc[0, col_chassi], "9BD27805MGB109244")
+        self.assertEqual(df_lido.loc[1, col_p], "PNU8135")
+        self.assertEqual(df_lido.loc[1, col_chassi], "9BWAB45U6GP057491")
+        # Colunas de ruído não relacionadas devem ter sido filtradas
+        self.assertNotIn("OBSERVAÇÕES GERAIS", df_lido.columns)
+        self.assertNotIn("TELEFONE MOTORISTA", df_lido.columns)
+
+        # Na consolidação para exportação (.xlsx / .pdf), o Chassi NUNCA deve aparecer
+        df_cons = FrotaDataProcessor.consolidar_resultados(
+            df_lido,
+            ["PAGO", "R$ 188,36"],
+            ["PAGO", "PAGO"],
+            ["R$ 0,00", "R$ 0,00"],
+            2
+        )
+        self.assertNotIn("CHASSI", [c.upper() for c in df_cons.columns])
+
+        arq_xlsx = os.path.join(self.temp_dir, "resultados_ruidosa.xlsx")
+        FrotaRelatorioExporter.exportar_excel(df_cons, arq_xlsx)
+        wb = load_workbook(arq_xlsx)
+        ws = wb.active
+        headers_xlsx = [str(cell.value or "").upper() for cell in ws[1]]
+        self.assertNotIn("CHASSI", headers_xlsx)
+        wb.close()
+
+    def test_fallback_chassi_detran_e_sefaz_mock(self):
+        from unittest.mock import MagicMock
+        from core.scraper_engine import FrotaScraperEngine
+
+        scraper = FrotaScraperEngine(headless=True)
+        mock_driver = MagicMock()
+        mock_wait = MagicMock()
+        scraper.driver = mock_driver
+        scraper.wait = mock_wait
+
+        # Verifica que quando RENAVAM é inválido/zerado e Chassi existe, ativa usar_chassi automaticamente
+        inp_placa = MagicMock()
+        inp_placa.is_displayed.return_value = True
+        inp_ren_chassi = MagicMock()
+        inp_ren_chassi.is_displayed.return_value = True
+
+        alerta_nao_encontrado = MagicMock()
+        alerta_nao_encontrado.is_displayed.return_value = True
+        alerta_nao_encontrado.text = "Veículo não encontrado."
+
+        # Simula Detran: 1ª chamada com RENAVAM errado retorna alerta 'Veículo não encontrado.',
+        # 2ª chamada (fallback recursivo com Chassi) retorna veículo localizado e PAGO
+        chamadas_detran = {"count": 0}
+
+        def fake_find_elements(by, value):
+            if value == "input":
+                return [inp_placa, inp_ren_chassi]
+            if "msg-validacao" in str(value):
+                if chamadas_detran["count"] <= 2:
+                    return [alerta_nao_encontrado]
+                return []
+            if "não possui multas" in str(value):
+                if chamadas_detran["count"] > 2:
+                    el_ok = MagicMock()
+                    el_ok.is_displayed.return_value = True
+                    return [el_ok]
+            return []
+
+        def fake_execute_script(script, *args):
+            if args and "click" in script:
+                # Quando clica em CONFIRMAR, incrementa contador de submissões
+                chamadas_detran["count"] += 1
+
+        mock_driver.find_elements.side_effect = fake_find_elements
+        mock_driver.execute_script.side_effect = fake_execute_script
+        mock_wait.until.return_value = MagicMock()
+
+        res = scraper.consultar_detran(
+            "PNU8135", "99999999999", True, True, chassi="9BWAB45U6GP057491"
+        )
+        self.assertTrue(res.usou_chassi)
+        self.assertEqual(res[0], "PAGO")
+        self.assertEqual(res[1], "R$ 0,00")
+
+    def test_resiliencia_xml_pdf_e_logger_anterior(self):
+        # 1. Testa carregar_resultado_anterior com arquivo inválido/corrompido (valida logger no bloco except)
+        arq_invalido = os.path.join(self.temp_dir, "corrompido.xlsx")
+        with open(arq_invalido, "w", encoding="utf-8") as f:
+            f.write("conteudo nao excel")
+        df_ant, dt_ant = carregar_resultado_anterior(arq_invalido)
+        self.assertIsNone(df_ant)
+        self.assertEqual(dt_ant, "")
+
+        # 2. Testa exportação PDF e PDF BI com caracteres especiais XML (&, <, >) em nomes de proprietários
+        df_esp = pd.DataFrame([
+            {
+                "PROPRIETÁRIO": "M & M LOGÍSTICA <MATRIZ & FILIAL>",
+                "Placa": "BRA1A11",
+                "RENAVAM": "01111111111",
+                "Valor_Licenciamento": "R$ 188,96",
+                "Valor_IPVA": "R$ 500,00",
+                "Valor_Multas": "R$ 0,00",
+                "Total_a_Pagar": "R$ 688,96",
+                "Status": "Com Débitos Pendentes"
+            }
+        ])
+        totais = {"lic": "R$ 188,96", "ipva": "R$ 500,00", "multas": "R$ 0,00", "total": "R$ 688,96"}
+        pdf_main = FrotaRelatorioExporter.exportar_pdf(
+            df_esp,
+            os.path.join(self.temp_dir, "teste_xml_chars.pdf"),
+            totais,
+            ["Licenciamento & IPVA"],
+            identificador_frota="M & M <Frota>"
+        )
+        pdf_bi = FrotaRelatorioExporter.exportar_pdf_bi(
+            df_esp,
+            os.path.join(self.temp_dir, "teste_xml_chars_BI.pdf"),
+            totais,
+            ["Licenciamento & IPVA"],
+            identificador_frota="M & M <Frota>"
+        )
+        self.assertTrue(os.path.exists(pdf_main))
+        self.assertTrue(os.path.exists(pdf_bi))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

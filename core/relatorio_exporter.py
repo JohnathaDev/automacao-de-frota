@@ -4,6 +4,7 @@ Aplica regras financeiras cumulativas de formatação e proteção contra Permis
 """
 import os
 from datetime import datetime
+from xml.sax.saxutils import escape as xml_escape
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -72,12 +73,25 @@ class FrotaRelatorioExporter:
     """Exportador para planilhas Excel formatadas e relatórios PDF em layout Paisagem."""
 
     @staticmethod
+    def _remover_colunas_ocultas(df: pd.DataFrame) -> pd.DataFrame:
+        """Garante que colunas auxiliares internas (como Chassi/VIN ou Unnamed) nunca apareçam no Excel ou PDF."""
+        colunas_remover = [
+            col for col in df.columns
+            if any(k in str(col).strip().upper() for k in ["CHASSI", "CHASSIS", "UNNAMED"])
+            or str(col).strip().upper() == "VIN"
+        ]
+        if colunas_remover:
+            return df.drop(columns=colunas_remover, errors="ignore")
+        return df
+
+    @staticmethod
     def exportar_excel(df: pd.DataFrame, caminho_arquivo: str) -> str:
         """
         Gera e formata a planilha Excel de saída com estilo corporativo.
         Trata PermissionError salvando com timestamp para evitar perda de dados.
         Retorna o caminho efetivo do arquivo gravado.
         """
+        df = FrotaRelatorioExporter._remover_colunas_ocultas(df)
         caminho_efetivo = caminho_arquivo
         pasta_dir = os.path.dirname(os.path.abspath(caminho_efetivo))
         if pasta_dir:
@@ -92,124 +106,128 @@ class FrotaRelatorioExporter:
             df.to_excel(caminho_efetivo, index=False, engine="openpyxl")
 
         wb = load_workbook(caminho_efetivo)
-        ws = wb.active
+        try:
+            ws = wb.active
 
-        cor_cabecalho = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
-        fonte_cabecalho = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-        fonte_linhas = Font(name="Calibri", size=10)
-        alinhamento_centro = Alignment(horizontal="center", vertical="center")
-        alinhamento_direita = Alignment(horizontal="right", vertical="center")
-        alinhamento_esquerda = Alignment(horizontal="left", vertical="center")
-        borda_fina = Border(
-            left=Side(style='thin', color='D9D9D9'),
-            right=Side(style='thin', color='D9D9D9'),
-            top=Side(style='thin', color='D9D9D9'),
-            bottom=Side(style='thin', color='D9D9D9')
-        )
+            cor_cabecalho = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+            fonte_cabecalho = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+            fonte_linhas = Font(name="Calibri", size=10)
+            alinhamento_centro = Alignment(horizontal="center", vertical="center")
+            alinhamento_direita = Alignment(horizontal="right", vertical="center")
+            alinhamento_esquerda = Alignment(horizontal="left", vertical="center")
+            borda_fina = Border(
+                left=Side(style='thin', color='D9D9D9'),
+                right=Side(style='thin', color='D9D9D9'),
+                top=Side(style='thin', color='D9D9D9'),
+                bottom=Side(style='thin', color='D9D9D9')
+            )
 
-        for cell in ws[1]:
-            cell.fill = cor_cabecalho
-            cell.font = fonte_cabecalho
-            cell.alignment = alinhamento_centro
+            for cell in ws[1]:
+                cell.fill = cor_cabecalho
+                cell.font = fonte_cabecalho
+                cell.alignment = alinhamento_centro
 
-        cor_zebra = PatternFill(start_color="F2F5F9", end_color="F2F5F9", fill_type="solid")
-        col_lic_idx = None
-        col_ipva_idx = None
-        col_multas_idx = None
-        col_total_idx = None
-        col_status_idx = None
+            cor_zebra = PatternFill(start_color="F2F5F9", end_color="F2F5F9", fill_type="solid")
+            col_lic_idx = None
+            col_ipva_idx = None
+            col_multas_idx = None
+            col_total_idx = None
+            col_status_idx = None
 
-        for col_idx, col_name in enumerate(df.columns, start=1):
-            cn = str(col_name).strip().upper()
-            if "LICENCIAMENTO" in cn:
-                col_lic_idx = col_idx
-            elif "IPVA" in cn:
-                col_ipva_idx = col_idx
-            elif "MULTA" in cn:
-                col_multas_idx = col_idx
-            elif "TOTAL" in cn:
-                col_total_idx = col_idx
-            elif "STATUS" in cn:
-                col_status_idx = col_idx
+            for col_idx, col_name in enumerate(df.columns, start=1):
+                cn = str(col_name).strip().upper()
+                if "LICENCIAMENTO" in cn:
+                    col_lic_idx = col_idx
+                elif "IPVA" in cn:
+                    col_ipva_idx = col_idx
+                elif "MULTA" in cn:
+                    col_multas_idx = col_idx
+                elif "TOTAL" in cn:
+                    col_total_idx = col_idx
+                elif "STATUS" in cn:
+                    col_status_idx = col_idx
 
-        for row_idx in range(2, ws.max_row + 1):
-            is_zebra = (row_idx % 2 == 0)
-            fill_padrao = cor_zebra if is_zebra else None
+            for row_idx in range(2, ws.max_row + 1):
+                is_zebra = (row_idx % 2 == 0)
+                fill_padrao = cor_zebra if is_zebra else None
 
-            for col_idx in range(1, ws.max_column + 1):
-                cell = ws.cell(row=row_idx, column=col_idx)
-                if fill_padrao:
-                    cell.fill = fill_padrao
-                cell.font = fonte_linhas
-                cell.border = borda_fina
-                val_txt = str(cell.value or "")
+                for col_idx in range(1, ws.max_column + 1):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    if fill_padrao:
+                        cell.fill = fill_padrao
+                    cell.font = fonte_linhas
+                    cell.border = borda_fina
+                    val_txt = str(cell.value or "")
 
-                is_col_financeira = col_idx in [col_lic_idx, col_ipva_idx, col_multas_idx, col_total_idx]
-                val_txt_upper = val_txt.upper()
+                    is_col_financeira = col_idx in [col_lic_idx, col_ipva_idx, col_multas_idx, col_total_idx]
+                    val_txt_upper = val_txt.upper()
 
-                if is_col_financeira:
-                    if val_txt_upper == "PAGO":
+                    if is_col_financeira:
+                        if val_txt_upper == "PAGO":
+                            cell.alignment = alinhamento_centro
+                            # Fundo verde pastel suave e fonte verde escuro elegante
+                            cell.fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
+                            cell.font = Font(name="Calibri", size=10, bold=True, color="166534")
+                        elif "RESTRIÇÃO" in val_txt_upper or "RESTRICAO" in val_txt_upper:
+                            cell.alignment = alinhamento_centro
+                            # Fundo laranja pastel suave e fonte laranja escuro elegante
+                            cell.fill = PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid")
+                            cell.font = Font(name="Calibri", size=10, bold=True, color="9A3412")
+                        else:
+                            cell.alignment = alinhamento_direita
+                            val_float = formatar_moeda_float(val_txt)
+                            is_lic = (col_idx == col_lic_idx)
+                            is_tot = (col_idx == col_total_idx)
+
+                            bold, underline, cor_hex = obter_estilo_financeiro(val_float, is_licenciamento=is_lic)
+                            if is_tot:
+                                bold = True
+                                if val_float > 0:
+                                    cor_hex = "#15803D"
+
+                            sublinhado_estilo = 'single' if underline else None
+                            cor_fonte = cor_hex.replace("#", "") if cor_hex else '000000'
+
+                            cell.font = Font(
+                                name="Calibri",
+                                size=10,
+                                bold=bold,
+                                underline=sublinhado_estilo,
+                                color=cor_fonte
+                            )
+                    elif col_idx == col_status_idx:
                         cell.alignment = alinhamento_centro
-                        # Fundo verde pastel suave e fonte verde escuro elegante
-                        cell.fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
-                        cell.font = Font(name="Calibri", size=10, bold=True, color="166534")
-                    elif "RESTRIÇÃO" in val_txt_upper or "RESTRICAO" in val_txt_upper:
+                        if "RESTRIÇÃO" in val_txt_upper or "RESTRICAO" in val_txt_upper:
+                            cell.fill = PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid")
+                            cell.font = Font(name="Calibri", size=10, bold=True, color="9A3412")
+                        elif "SEM DÉBITO" in val_txt_upper:
+                            cell.font = Font(name="Calibri", size=10, bold=True, color="166534")
+                        elif "COM DÉBITO" in val_txt_upper:
+                            cell.font = Font(name="Calibri", size=10, bold=True, color="991B1B")
+                        elif "FALHA" in val_txt_upper:
+                            cell.font = Font(name="Calibri", size=10, bold=True, color="B45309")
+                    elif "PLACA" in str(ws.cell(row=1, column=col_idx).value or "").upper():
                         cell.alignment = alinhamento_centro
-                        # Fundo laranja pastel suave e fonte laranja escuro elegante
-                        cell.fill = PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid")
-                        cell.font = Font(name="Calibri", size=10, bold=True, color="9A3412")
+                        cell.font = Font(name="Calibri", size=10, bold=True)
+                    elif "RENAVAM" in str(ws.cell(row=1, column=col_idx).value or "").upper():
+                        cell.alignment = alinhamento_centro
                     else:
-                        cell.alignment = alinhamento_direita
-                        val_float = formatar_moeda_float(val_txt)
-                        is_lic = (col_idx == col_lic_idx)
-                        is_tot = (col_idx == col_total_idx)
+                        cell.alignment = alinhamento_esquerda
 
-                        bold, underline, cor_hex = obter_estilo_financeiro(val_float, is_licenciamento=is_lic)
-                        if is_tot:
-                            bold = True
-                            if val_float > 0:
-                                cor_hex = "#15803D"
+            for col in ws.columns:
+                max_len = 0
+                col_letter = get_column_letter(col[0].column)
+                for cell in col:
+                    val = str(cell.value or '')
+                    if len(val) > max_len:
+                        max_len = len(val)
+                ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
 
-                        sublinhado_estilo = 'single' if underline else None
-                        cor_fonte = cor_hex.replace("#", "") if cor_hex else '000000'
+            ws.freeze_panes = "A2"
+            wb.save(caminho_efetivo)
+        finally:
+            wb.close()
 
-                        cell.font = Font(
-                            name="Calibri",
-                            size=10,
-                            bold=bold,
-                            underline=sublinhado_estilo,
-                            color=cor_fonte
-                        )
-                elif col_idx == col_status_idx:
-                    cell.alignment = alinhamento_centro
-                    if "RESTRIÇÃO" in val_txt_upper or "RESTRICAO" in val_txt_upper:
-                        cell.fill = PatternFill(start_color="FFEDD5", end_color="FFEDD5", fill_type="solid")
-                        cell.font = Font(name="Calibri", size=10, bold=True, color="9A3412")
-                    elif "SEM DÉBITO" in val_txt_upper:
-                        cell.font = Font(name="Calibri", size=10, bold=True, color="166534")
-                    elif "COM DÉBITO" in val_txt_upper:
-                        cell.font = Font(name="Calibri", size=10, bold=True, color="991B1B")
-                    elif "FALHA" in val_txt_upper:
-                        cell.font = Font(name="Calibri", size=10, bold=True, color="B45309")
-                elif "PLACA" in str(ws.cell(row=1, column=col_idx).value or "").upper():
-                    cell.alignment = alinhamento_centro
-                    cell.font = Font(name="Calibri", size=10, bold=True)
-                elif "RENAVAM" in str(ws.cell(row=1, column=col_idx).value or "").upper():
-                    cell.alignment = alinhamento_centro
-                else:
-                    cell.alignment = alinhamento_esquerda
-
-        for col in ws.columns:
-            max_len = 0
-            col_letter = get_column_letter(col[0].column)
-            for cell in col:
-                val = str(cell.value or '')
-                if len(val) > max_len:
-                    max_len = len(val)
-            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
-
-        ws.freeze_panes = "A2"
-        wb.save(caminho_efetivo)
         logger.info(f"Relatório Excel gravado com sucesso: {caminho_efetivo}")
         return caminho_efetivo
 
@@ -228,6 +246,7 @@ class FrotaRelatorioExporter:
         if not REPORTLAB_DISPONIVEL:
             raise RuntimeError("ReportLab não está instalado no ambiente.")
 
+        df = FrotaRelatorioExporter._remover_colunas_ocultas(df)
         caminho_efetivo = caminho_arquivo
         pasta_dir = os.path.dirname(os.path.abspath(caminho_efetivo))
         if pasta_dir:
@@ -264,15 +283,15 @@ class FrotaRelatorioExporter:
         sub_texto = f"Portais Consultados: Detran-CE & Sefaz-CE | Filtros Ativos: {', '.join(filtros_ativos)} | Total de Veículos: {len(df)}"
         if identificador_frota:
             sub_texto += f" | Frota: {identificador_frota}"
-        elementos.append(Paragraph(sub_texto, estilo_sub))
+        elementos.append(Paragraph(xml_escape(sub_texto), estilo_sub))
 
         # CARDS DE TOTAIS
         dados_cards = [[
             Paragraph(f"<b>VEÍCULOS</b><br/><font size=10 color='#1E3A8A'><b>{len(df)}</b></font>", estilo_td),
-            Paragraph(f"<b>LICENCIAMENTO</b><br/><font size=10 color='#B45309'><b>{totais.get('lic', 'R$ 0,00')}</b></font>", estilo_td),
-            Paragraph(f"<b>IPVA EM ABERTO</b><br/><font size=10 color='#B91C1C'><b>{totais.get('ipva', 'R$ 0,00')}</b></font>", estilo_td),
-            Paragraph(f"<b>MULTAS DETRAN</b><br/><font size=10 color='#7C2D12'><b>{totais.get('multas', 'R$ 0,00')}</b></font>", estilo_td),
-            Paragraph(f"<b>TOTAL A PAGAR</b><br/><font size=10 color='#15803D'><b>{totais.get('total', 'R$ 0,00')}</b></font>", estilo_td)
+            Paragraph(f"<b>LICENCIAMENTO</b><br/><font size=10 color='#B45309'><b>{xml_escape(str(totais.get('lic', 'R$ 0,00')))}</b></font>", estilo_td),
+            Paragraph(f"<b>IPVA EM ABERTO</b><br/><font size=10 color='#B91C1C'><b>{xml_escape(str(totais.get('ipva', 'R$ 0,00')))}</b></font>", estilo_td),
+            Paragraph(f"<b>MULTAS DETRAN</b><br/><font size=10 color='#7C2D12'><b>{xml_escape(str(totais.get('multas', 'R$ 0,00')))}</b></font>", estilo_td),
+            Paragraph(f"<b>TOTAL A PAGAR</b><br/><font size=10 color='#15803D'><b>{xml_escape(str(totais.get('total', 'R$ 0,00')))}</b></font>", estilo_td)
         ]]
         tabela_cards = Table(dados_cards, colWidths=[150]*5)
         tabela_cards.setStyle(TableStyle([
@@ -287,7 +306,7 @@ class FrotaRelatorioExporter:
 
         # TABELA DE DADOS
         colunas_df = list(df.columns)
-        cabecalho = [Paragraph(str(col), estilo_th) for col in colunas_df]
+        cabecalho = [Paragraph(xml_escape(str(col)), estilo_th) for col in colunas_df]
         tabela_linhas = [cabecalho]
 
         largura_total_util = 770
@@ -298,20 +317,21 @@ class FrotaRelatorioExporter:
             linha_celulas = []
             for col_nome in colunas_df:
                 val = str(row[col_nome] if pd.notna(row[col_nome]) else "")
+                val_esc = xml_escape(val)
                 val_upper = val.upper()
                 col_upper = str(col_nome).upper()
 
                 if "STATUS" in col_upper:
                     if "RESTRIÇÃO" in val_upper or "RESTRICAO" in val_upper:
-                        txt_p = f"<font color='#C2410C'><b>{val}</b></font>"
+                        txt_p = f"<font color='#C2410C'><b>{val_esc}</b></font>"
                     elif "SEM DÉBITO" in val_upper:
-                        txt_p = f"<font color='#166534'><b>{val}</b></font>"
+                        txt_p = f"<font color='#166534'><b>{val_esc}</b></font>"
                     elif "COM DÉBITO" in val_upper:
-                        txt_p = f"<font color='#991B1B'><b>{val}</b></font>"
+                        txt_p = f"<font color='#991B1B'><b>{val_esc}</b></font>"
                     elif "FALHA" in val_upper:
-                        txt_p = f"<font color='#B45309'><b>{val}</b></font>"
+                        txt_p = f"<font color='#B45309'><b>{val_esc}</b></font>"
                     else:
-                        txt_p = val
+                        txt_p = val_esc
                     linha_celulas.append(Paragraph(txt_p, estilo_td))
                 elif any(c in col_upper for c in ["LICENCIAMENTO", "IPVA", "MULTA", "TOTAL"]):
                     if val_upper == "PAGO":
@@ -330,7 +350,7 @@ class FrotaRelatorioExporter:
                             if val_float > 0:
                                 cor_hex = "#15803D"
 
-                        conteudo = val
+                        conteudo = val_esc
                         if underline:
                             conteudo = f"<u>{conteudo}</u>"
                         if bold:
@@ -340,9 +360,9 @@ class FrotaRelatorioExporter:
 
                         linha_celulas.append(Paragraph(conteudo, estilo_td_right))
                 elif "PLACA" in col_upper:
-                    linha_celulas.append(Paragraph(f"<b>{val}</b>", estilo_td))
+                    linha_celulas.append(Paragraph(f"<b>{val_esc}</b>", estilo_td))
                 else:
-                    linha_celulas.append(Paragraph(val, estilo_td_left))
+                    linha_celulas.append(Paragraph(val_esc, estilo_td_left))
             tabela_linhas.append(linha_celulas)
 
         tabela_dados = Table(tabela_linhas, colWidths=larguras, repeatRows=1)
@@ -554,14 +574,14 @@ class FrotaRelatorioExporter:
         )
 
         elementos = []
-        elementos.append(Paragraph("PAINEL ANALÍTICO DE BI & INTELIGÊNCIA DE FROTA (CE)", estilo_titulo))
+        elementos.append(Paragraph("PAINEL ANALÍTICO DE BI &amp; INTELIGÊNCIA DE FROTA (CE)", estilo_titulo))
         sub_texto = (
             f"Portais Auditados: Detran-CE & Sefaz-CE | Motores Ativos: {', '.join(filtros_ativos)} | "
             f"Total da Frota: {total_veiculos} veículos"
         )
         if identificador_frota:
             sub_texto += f" | Frota: {identificador_frota}"
-        elementos.append(Paragraph(sub_texto, estilo_sub))
+        elementos.append(Paragraph(xml_escape(sub_texto), estilo_sub))
 
         # 1. FAIXA DE KPI CARDS EXECUTIVOS
         p_lic = (soma_lic / soma_bruta * 100.0) if soma_bruta > 0 else 0.0
@@ -626,11 +646,11 @@ class FrotaRelatorioExporter:
 
         # 2.5 SEÇÃO COMPARATIVA COM A PLANILHA ANTERIOR (SE EXISTIR HISTÓRICO ANTERIOR)
         if comparativo_anterior:
-            dt_ant = comparativo_anterior.get("data_anterior", "Auditoria Anterior")
-            dt_atu = comparativo_anterior.get("data_atual", datetime.now().strftime("%d/%m/%Y %H:%M"))
+            dt_ant = xml_escape(str(comparativo_anterior.get("data_anterior", "Auditoria Anterior")))
+            dt_atu = xml_escape(str(comparativo_anterior.get("data_atual", datetime.now().strftime("%d/%m/%Y %H:%M"))))
             elementos.append(
                 Paragraph(
-                    f"COMPARATIVO DE EVOLUÇÃO & BAIXAS DE DÉBITOS (ANTERIOR: {dt_ant} × ATUAL: {dt_atu})",
+                    f"COMPARATIVO DE EVOLUÇÃO &amp; BAIXAS DE DÉBITOS (ANTERIOR: {dt_ant} × ATUAL: {dt_atu})",
                     estilo_sec
                 )
             )
@@ -678,7 +698,7 @@ class FrotaRelatorioExporter:
 
             frases = comparativo_anterior.get("frases_resumo", [])
             if frases:
-                linhas_frases = "<br/>".join(f"• <b>{f}</b>" for f in frases)
+                linhas_frases = "<br/>".join(f"• <b>{xml_escape(str(f))}</b>" for f in frases)
                 cor_bg_box = "#ECFDF5" if comparativo_anterior.get("teve_alteracao") else "#F8FAFC"
                 cor_bd_box = "#10B981" if comparativo_anterior.get("teve_alteracao") else "#CBD5E1"
                 box_resumo = Table([[Paragraph(linhas_frases, estilo_bullet_comp)]], colWidths=[770])
@@ -706,12 +726,12 @@ class FrotaRelatorioExporter:
                 for mv in movs:
                     cor_var = "#15803D" if mv.get("tipo") == "BAIXA" else "#DC2626"
                     linhas_mov.append([
-                        Paragraph(f"<b>{mv['placa']}</b>", estilo_td),
-                        Paragraph((mv.get("prop") or "-")[:36], estilo_td_left),
-                        Paragraph(f"<b>{mv['tributo']}</b>", estilo_td_left),
-                        Paragraph(mv["anterior"], estilo_td_right),
-                        Paragraph(f"<b>{mv['atual']}</b>", estilo_td_right),
-                        Paragraph(f"<font color='{cor_var}'><b>{mv['variacao']}</b></font>", estilo_td_right),
+                        Paragraph(f"<b>{xml_escape(str(mv['placa']))}</b>", estilo_td),
+                        Paragraph(xml_escape(str(mv.get("prop") or "-")[:36]), estilo_td_left),
+                        Paragraph(f"<b>{xml_escape(str(mv['tributo']))}</b>", estilo_td_left),
+                        Paragraph(xml_escape(str(mv["anterior"])), estilo_td_right),
+                        Paragraph(f"<b>{xml_escape(str(mv['atual']))}</b>", estilo_td_right),
+                        Paragraph(f"<font color='{cor_var}'><b>{xml_escape(str(mv['variacao']))}</b></font>", estilo_td_right),
                     ])
                 tab_mov = Table(linhas_mov, colWidths=[75, 215, 175, 100, 100, 105], repeatRows=1)
                 tab_mov.setStyle(TableStyle([
@@ -750,15 +770,15 @@ class FrotaRelatorioExporter:
                 cor_rank = "#DC2626" if rank_idx == 1 else ("#EA580C" if rank_idx in (2, 3) else "#1E3A8A")
                 linhas_top10.append([
                     Paragraph(f"<font color='{cor_rank}'><b>{rank_idx}º</b></font>", estilo_td),
-                    Paragraph(f"<b>{item['placa']}</b>", estilo_td),
-                    Paragraph(item["renavam"], estilo_td),
-                    Paragraph((item["prop"] or "-")[:32], estilo_td_left),
-                    Paragraph(item["lic_s"], estilo_td_right),
-                    Paragraph(item["ipva_s"], estilo_td_right),
-                    Paragraph(item["multas_s"], estilo_td_right),
-                    Paragraph(f"<font color='#15803D'><b>{item['total_s']}</b></font>", estilo_td_right),
+                    Paragraph(f"<b>{xml_escape(str(item['placa']))}</b>", estilo_td),
+                    Paragraph(xml_escape(str(item["renavam"])), estilo_td),
+                    Paragraph(xml_escape(str(item["prop"] or "-")[:32]), estilo_td_left),
+                    Paragraph(xml_escape(str(item["lic_s"])), estilo_td_right),
+                    Paragraph(xml_escape(str(item["ipva_s"])), estilo_td_right),
+                    Paragraph(xml_escape(str(item["multas_s"])), estilo_td_right),
+                    Paragraph(f"<font color='#15803D'><b>{xml_escape(str(item['total_s']))}</b></font>", estilo_td_right),
                     Paragraph(f"<b>{pct_item:.1f}%</b>", estilo_td),
-                    Paragraph(f"<font color='#991B1B'><b>{item['status']}</b></font>", estilo_td),
+                    Paragraph(f"<font color='#991B1B'><b>{xml_escape(str(item['status']))}</b></font>", estilo_td),
                 ])
 
             larg_top10 = [28, 56, 72, 148, 76, 72, 76, 84, 52, 106]
@@ -794,7 +814,7 @@ class FrotaRelatorioExporter:
             for nome_p, d_p in lista_props:
                 pct_p = (d_p["total"] / soma_total * 100.0) if soma_total > 0 else 0.0
                 linhas_prop.append([
-                    Paragraph(f"<b>{nome_p[:38]}</b>", estilo_td_left),
+                    Paragraph(f"<b>{xml_escape(str(nome_p)[:38])}</b>", estilo_td_left),
                     Paragraph(str(d_p["qtd_total"]), estilo_td),
                     Paragraph(str(d_p["qtd_debitos"]), estilo_td),
                     Paragraph(formatar_float_moeda(d_p["lic"]), estilo_td_right),

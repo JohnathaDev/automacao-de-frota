@@ -76,7 +76,9 @@ def processar_frota(
     print(f"\n[1/4] Carregando e validando arquivo: '{caminho_entrada}'...")
     try:
         df_frota, col_placa, col_renavam = FrotaDataProcessor.carregar_planilha(caminho_entrada)
-        print(f"      Colunas detectadas: Placa='{col_placa}' | RENAVAM='{col_renavam}'")
+        col_chassi = FrotaDataProcessor.localizar_coluna_chassi(df_frota)
+        info_chassi = f" | Chassi='{col_chassi}' (Fallback ativo)" if col_chassi else ""
+        print(f"      Colunas detectadas: Placa='{col_placa}' | RENAVAM='{col_renavam}'{info_chassi}")
         print(f"      Total de veículos válidos: {len(df_frota)}")
     except Exception as e:
         print(f"[ERRO] Falha ao carregar a planilha: {e}")
@@ -102,6 +104,11 @@ def processar_frota(
         for index, row in df_frota.iterrows():
             placa = str(row[col_placa]).strip().upper()
             renavam = str(row[col_renavam]).strip()
+            chassi = (
+                str(row[col_chassi]).strip()
+                if (col_chassi and col_chassi in df_frota.columns and pd.notna(row[col_chassi]))
+                else ""
+            )
             pos = index + 1
 
             print(f"\n[{pos}/{total}] Processando veículo: Placa {placa} | RENAVAM {renavam}")
@@ -121,7 +128,7 @@ def processar_frota(
                 print(f"    -> [AVISO] Placa fora do padrão Mercosul/Tradicional: {placa}")
             else:
                 if consultar_lic or consultar_multas:
-                    res_detran = scraper.consultar_detran(placa, renavam, consultar_lic, consultar_multas)
+                    res_detran = scraper.consultar_detran(placa, renavam, consultar_lic, consultar_multas, chassi=chassi)
                     val_lic = res_detran[0]
                     if str(val_lic).strip() in ["R$ 0,00", "0,00"]:
                         val_lic = "PAGO"
@@ -131,7 +138,7 @@ def processar_frota(
                     time.sleep(0.4)
 
                 if consultar_ipva:
-                    val_ipva = scraper.consultar_sefaz_ipva(placa, renavam)
+                    val_ipva = scraper.consultar_sefaz_ipva(placa, renavam, chassi=chassi)
                     if str(val_ipva).strip() in ["R$ 0,00", "0,00"]:
                         val_ipva = "PAGO"
                     print(f"    -> Sefaz-CE:  IPVA em aberto={val_ipva}")
