@@ -6,9 +6,13 @@
 logs/
 config.json
 
-# Memória Local do Sistema (NÃO SUBIR AO GITHUB)
+# Memória Local do Sistema e Documentação Interna (NÃO SUBIR AO GITHUB)
 MEMORIA_SISTEMA.md
+MEMORIA_LOCAL_PROJETO.md
+*LOCAL*.md
+*local*.md
 MEMORIA_*.md
+memoria_*.md
 
 
 
@@ -23,8 +27,7 @@ venv/
 ENV/
 build/
 develop-eggs/
-dist/*
-!dist/automacao_frota_gui.exe
+dist/
 downloads/
 eggs/
 .eggs/

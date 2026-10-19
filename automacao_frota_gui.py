@@ -39,9 +39,7 @@ from core.data_processor import (
     formatar_moeda_float,
     formatar_float_moeda,
     calcular_total_a_pagar_veiculo,
-    obter_estilo_financeiro,
     obter_ultimo_dia_util_mes,
-    obter_proximo_dia_util,
     PADRAO_PLACA,
     gerar_nome_base_resultado,
     obter_caminhos_arquivos_saida
@@ -2736,13 +2734,6 @@ class AppConsultaFrotaGUI:
             if item_selecionado not in self.tree.selection():
                 self.tree.selection_set(item_selecionado)
             self.menu_contexto.post(event.x_root, event.y_root)
-
-    def _alternar_todos_filtros(self):
-        todos_ativos = self.var_ipva.get() and self.var_lic.get() and self.var_multas.get()
-        novo_estado = not todos_ativos
-        self.var_ipva.set(novo_estado)
-        self.var_lic.set(novo_estado)
-        self.var_multas.set(novo_estado)
 
     def _selecionar_pasta_destino(self):
         pasta = filedialog.askdirectory(title="Selecione a Pasta de Destino dos Relatórios e Boletos")

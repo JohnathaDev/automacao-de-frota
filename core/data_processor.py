@@ -146,11 +146,6 @@ def obter_ultimo_dia_util_mes(data_base: datetime | None = None) -> str:
     return d.strftime("%d/%m/%Y")
 
 
-def obter_proximo_dia_util(data_base: datetime | None = None) -> str:
-    """Mantido para compatibilidade, retornando o último dia útil do mês."""
-    return obter_ultimo_dia_util_mes(data_base)
-
-
 def extrair_placa_limpa(val: str) -> str:
     """
     Extrai apenas a Placa válida (Mercosul ou Tradicional) mesmo quando a célula

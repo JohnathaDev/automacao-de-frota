@@ -24,7 +24,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 
-from core.data_processor import obter_ultimo_dia_util_mes, obter_proximo_dia_util
+from core.data_processor import obter_ultimo_dia_util_mes
 from core.scraper_engine import obter_caminho_chromedriver
 from core.logger_config import obter_logger
 
