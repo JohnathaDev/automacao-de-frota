@@ -523,7 +523,6 @@ class FrotaRelatorioExporter:
         top10 = ranking_veiculos[:10]
 
         soma_bruta = soma_lic + soma_ipva + soma_multas
-        abatimento = max(0.0, soma_bruta - soma_total)
         auditados = qtd_pagos + qtd_debitos + qtd_falhas
 
         doc = SimpleDocTemplate(

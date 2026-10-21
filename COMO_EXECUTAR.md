@@ -18,7 +18,7 @@ Independentemente de ter Python ou não, o computador que executará a automaç�
 
 ## 🟢 Cenário 1: O dispositivo possui Python instalado
 
-Se o computador de destino já possui o Python 3.8 ou superior:
+Se o computador de destino já possui o Python 3.10 ou superior:
 
 ### Passo 1: Obter os arquivos do projeto
 Baixe ou clone este repositório no computador:
@@ -26,7 +26,7 @@ Baixe ou clone este repositório no computador:
 git clone https://github.com/JohnathaDev/automacao-de-frota.git
 cd automacao-de-frota
 ```
-*(Ou simplesmente copie o arquivo `automacao_frota_gui.py` e o `requirements.txt` para uma pasta).*
+*(Ou copie para uma pasta os arquivos `automacao_frota_gui.py`, `automacao_frota_gui.pyw`, `requirements.txt` **e a pasta `core/` inteira** — o aplicativo não funciona sem ela).*
 
 ### Passo 2: Instalar as bibliotecas necessárias
 Abra o Prompt de Comando (CMD) ou PowerShell dentro da pasta do projeto e execute:

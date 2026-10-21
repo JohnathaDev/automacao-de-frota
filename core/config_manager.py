@@ -2,10 +2,23 @@
 Módulo de Configuração e Persistência de Preferências do Usuário (config.json).
 """
 import os
+import sys
 import json
 from typing import Any, Dict
 
-ARQUIVO_CONFIG = "config.json"
+
+def obter_diretorio_base() -> str:
+    """
+    Diretório do aplicativo (independente da pasta de onde foi iniciado):
+    - Executável PyInstaller: pasta do .exe
+    - Código-fonte: raiz do projeto (pasta acima de core/)
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+ARQUIVO_CONFIG = os.path.join(obter_diretorio_base(), "config.json")
 
 CONFIG_PADRAO: Dict[str, Any] = {
     "modo_noturno": False,

@@ -143,6 +143,11 @@ def obter_ultimo_dia_util_mes(data_base: datetime | None = None) -> str:
     while d.weekday() >= 5 or (d.day, d.month) in feriados:
         d -= timedelta(days=1)
 
+    # Se o último dia útil já passou (ex: consulta feita no sábado/domingo de fim de mês),
+    # usa a própria data base para que o vencimento nunca seja retroativo
+    if d.date() < data_base.date():
+        d = data_base
+
     return d.strftime("%d/%m/%Y")
 
 
@@ -611,6 +616,57 @@ def _formatar_lista_placas(placas: list[str], limite: int = 15) -> str:
     return base
 
 
+_VALORES_NAO_CONSULTADOS = {"", "-", "N/A", "NÃO CONSULTADO", "NAO CONSULTADO", "NAN", "NONE"}
+
+
+def _valor_nao_consultado(valor: str) -> bool:
+    """Indica se o campo de débito não foi consultado na auditoria (ex: '-')."""
+    return str(valor).strip().upper() in _VALORES_NAO_CONSULTADOS
+
+
+def _equalizar_nao_comparavel(
+    anterior: str,
+    atual: str,
+    restricao_atual_sem_valor: bool = False
+) -> tuple[str, str, bool]:
+    """
+    Quando apenas um dos lados possui valor efetivamente consultado, replica esse valor no outro lado
+    para que a comparação não interprete a ausência de consulta como quitação (ou como novo débito).
+    Retorna (anterior_efetivo, atual_efetivo, houve_substituicao).
+    """
+    ant_nc = _valor_nao_consultado(anterior)
+    atu_nc = _valor_nao_consultado(atual)
+    if restricao_atual_sem_valor and not atu_nc:
+        atual_lower = str(atual).lower()
+        if ("restriç" in atual_lower or "restric" in atual_lower) and formatar_moeda_float(anterior) > 0:
+            return anterior, anterior, True
+    if atu_nc and not ant_nc:
+        return anterior, anterior, True
+    if ant_nc and not atu_nc:
+        return atual, atual, True
+    return anterior, atual, False
+
+
+def _total_comparavel(
+    row: pd.Series,
+    mapa: dict,
+    valores_originais: tuple[str, str, str],
+    valores_efetivos: tuple[str, str, str]
+) -> float:
+    """
+    Total a Pagar de uma auditoria para fins de comparação.
+    Usa o Total_a_Pagar gravado (quando > 0) e, se algum tributo foi equalizado por não ter sido
+    consultado, ajusta esse total apenas pela diferença que o tributo equalizado representa.
+    """
+    total_salvo = formatar_moeda_float(row.get(mapa["total"], "0")) if mapa["total"] else 0.0
+    if total_salvo <= 0:
+        return calcular_total_a_pagar_veiculo(*valores_efetivos)
+    if tuple(valores_originais) == tuple(valores_efetivos):
+        return total_salvo
+    ajuste = calcular_total_a_pagar_veiculo(*valores_efetivos) - calcular_total_a_pagar_veiculo(*valores_originais)
+    return round(total_salvo + ajuste, 2)
+
+
 def carregar_resultado_anterior(caminho_excel_resultado: str) -> tuple[pd.DataFrame | None, str]:
     """
     Carrega a última planilha de resultados existente antes de ser sobrescrita,
@@ -755,22 +811,25 @@ def comparar_auditorias(
         ipva_atu_s = str(row_atu.get(m_atu["ipva"], "0") if m_atu["ipva"] else "0")
         mul_atu_s = str(row_atu.get(m_atu["multas"], "0") if m_atu["multas"] else "0")
 
-        v_lic_ant = formatar_moeda_float(lic_ant_s)
-        v_ipva_ant = formatar_moeda_float(ipva_ant_s)
-        v_mul_ant = formatar_moeda_float(mul_ant_s)
-        v_tot_ant = (
-            formatar_moeda_float(row_ant.get(m_ant["total"], "0"))
-            if m_ant["total"] and formatar_moeda_float(row_ant.get(m_ant["total"], "0")) > 0
-            else calcular_total_a_pagar_veiculo(lic_ant_s, ipva_ant_s, mul_ant_s)
+        # Tributo não consultado em uma das auditorias (ou Licenciamento atual com Restrição, sem valor
+        # informado pelo portal) não é comparável: assume-se o valor da outra auditoria (sem alteração),
+        # evitando registrar pagamentos ou acréscimos que não ocorreram.
+        lic_ant_e, lic_atu_e, _ = _equalizar_nao_comparavel(lic_ant_s, lic_atu_s, restricao_atual_sem_valor=True)
+        ipva_ant_e, ipva_atu_e, _ = _equalizar_nao_comparavel(ipva_ant_s, ipva_atu_s)
+        mul_ant_e, mul_atu_e, _ = _equalizar_nao_comparavel(mul_ant_s, mul_atu_s)
+
+        v_lic_ant = formatar_moeda_float(lic_ant_e)
+        v_ipva_ant = formatar_moeda_float(ipva_ant_e)
+        v_mul_ant = formatar_moeda_float(mul_ant_e)
+        v_tot_ant = _total_comparavel(
+            row_ant, m_ant, (lic_ant_s, ipva_ant_s, mul_ant_s), (lic_ant_e, ipva_ant_e, mul_ant_e)
         )
 
-        v_lic_atu = formatar_moeda_float(lic_atu_s)
-        v_ipva_atu = formatar_moeda_float(ipva_atu_s)
-        v_mul_atu = formatar_moeda_float(mul_atu_s)
-        v_tot_atu = (
-            formatar_moeda_float(row_atu.get(m_atu["total"], "0"))
-            if m_atu["total"] and formatar_moeda_float(row_atu.get(m_atu["total"], "0")) > 0
-            else calcular_total_a_pagar_veiculo(lic_atu_s, ipva_atu_s, mul_atu_s)
+        v_lic_atu = formatar_moeda_float(lic_atu_e)
+        v_ipva_atu = formatar_moeda_float(ipva_atu_e)
+        v_mul_atu = formatar_moeda_float(mul_atu_e)
+        v_tot_atu = _total_comparavel(
+            row_atu, m_atu, (lic_atu_s, ipva_atu_s, mul_atu_s), (lic_atu_e, ipva_atu_e, mul_atu_e)
         )
 
         total_anterior_comparado += v_tot_ant

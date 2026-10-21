@@ -40,9 +40,7 @@ from core.data_processor import (
     formatar_float_moeda,
     calcular_total_a_pagar_veiculo,
     obter_ultimo_dia_util_mes,
-    PADRAO_PLACA,
-    gerar_nome_base_resultado,
-    obter_caminhos_arquivos_saida
+    PADRAO_PLACA
 )
 from core.scraper_engine import FrotaScraperEngine
 from core.boleto_downloader import FrotaBoletoDownloader
@@ -56,13 +54,21 @@ logger = obter_logger("GUI")
 # ======================================================================================
 
 def ocultar_console():
-    """Oculta a janela preta de console do Python no Windows."""
+    """
+    Oculta a janela preta de console do Python no Windows.
+    Só oculta quando o console pertence exclusivamente a este processo (ex: duplo clique no .py);
+    se o app foi iniciado a partir de um terminal (CMD/PowerShell), o terminal do usuário é preservado.
+    """
     if sys.platform == "win32" and "--console" not in sys.argv:
         try:
             import ctypes
-            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            kernel32 = ctypes.windll.kernel32
+            hwnd = kernel32.GetConsoleWindow()
             if hwnd:
-                ctypes.windll.user32.ShowWindow(hwnd, 0)
+                processos = (ctypes.c_uint * 4)()
+                qtd_processos = kernel32.GetConsoleProcessList(processos, 4)
+                if qtd_processos <= 1:
+                    ctypes.windll.user32.ShowWindow(hwnd, 0)
         except Exception:
             pass
 
@@ -1242,6 +1248,9 @@ class JanelaDownloadBoletos(tk.Toplevel):
     Permite marcar individualmente ou em massa via 'Selecionar Todos'.
     """
 
+    # Quantidade máxima de rodadas (1 tentativa + retentativas) por boleto antes de desistir
+    MAX_RODADAS_DOWNLOAD = 3
+
     def __init__(
         self,
         parent: tk.Tk,
@@ -1607,7 +1616,8 @@ class JanelaDownloadBoletos(tk.Toplevel):
             fila_pendentes = list(tarefas)
             rodada = 1
 
-            while fila_pendentes and not self.cancelar_solicitado:
+            while fila_pendentes and not self.cancelar_solicitado and rodada <= self.MAX_RODADAS_DOWNLOAD:
+                ultima_rodada = rodada == self.MAX_RODADAS_DOWNLOAD
                 if rodada > 1:
                     msg_rodada = f"Reiniciando download para {len(fila_pendentes)} boletos pendentes (Tentativa {rodada})..."
                     self.after(0, lambda m=msg_rodada: self.var_progresso_txt.set(m))
@@ -1657,12 +1667,13 @@ class JanelaDownloadBoletos(tk.Toplevel):
                         txt = f"{lbl_tipo}: Concluído"
                     else:
                         falhas_desta_rodada.append((item, tipo))
-                        if not self.cancelar_solicitado:
+                        if not self.cancelar_solicitado and not ultima_rodada:
                             cor = "#D97706"
                             txt = f"{lbl_tipo}: Erro (Repetirá)"
                         else:
                             cor = "#DC2626"
                             txt = f"{lbl_tipo}: Erro"
+                            logger.warning(f"Boleto não emitido ({placa} - {lbl_tipo}): {msg}")
 
                     if item["lbl_status"]:
                         self.after(0, lambda lbl=item["lbl_status"], t=txt, c=cor: lbl.config(text=t, foreground=c))
@@ -1676,7 +1687,10 @@ class JanelaDownloadBoletos(tk.Toplevel):
                     time.sleep(1.5)
 
             sucessos = len(self.tarefas_executadas_sucesso)
-            self.after(0, lambda s=sucessos, t=total_geral: self._finalizar_downloads_ui(s, t))
+            falhas_finais = [
+                f"{item['placa']} - {'Licenciamento' if tipo == 'lic' else 'IPVA'}" for item, tipo in fila_pendentes
+            ]
+            self.after(0, lambda s=sucessos, t=total_geral, f=falhas_finais: self._finalizar_downloads_ui(s, t, f))
 
         except Exception as e:
             logger.error(f"Erro fatal no lote de downloads: {e}")
@@ -1692,7 +1706,7 @@ class JanelaDownloadBoletos(tk.Toplevel):
         self.var_progresso_txt.set(f"Baixando ({concluidos}/{total}){info_rodada}: {placa} - {tipo}...")
         self.barra_progresso["value"] = pct
 
-    def _finalizar_downloads_ui(self, sucessos: int, total: int):
+    def _finalizar_downloads_ui(self, sucessos: int, total: int, falhas: list[str] | None = None):
         self.barra_progresso["value"] = 100
         self.btn_iniciar_dl.config(state="normal")
         self.btn_pausar_dl.config(state="disabled", text="⏸️ Pausar")
@@ -1702,6 +1716,17 @@ class JanelaDownloadBoletos(tk.Toplevel):
         if self.cancelar_solicitado:
             self.var_progresso_txt.set(f"Downloads interrompidos! {sucessos} de {total} boletos baixados.")
             messagebox.showinfo("Cancelado", f"Processamento interrompido.\n\nForam salvos {sucessos} de {total} boletos selecionados.")
+        elif falhas:
+            self.var_progresso_txt.set(f"Downloads finalizados com pendências: {sucessos} de {total} boletos baixados.")
+            lista = "\n".join(f"• {f}" for f in falhas[:15])
+            if len(falhas) > 15:
+                lista += f"\n(+{len(falhas) - 15} boleto(s))"
+            messagebox.showwarning(
+                "Downloads Concluídos com Pendências",
+                f"Foram salvos {sucessos} de {total} boletos.\n\n"
+                f"Não foi possível emitir após {self.MAX_RODADAS_DOWNLOAD} tentativas:\n{lista}\n\n"
+                f"Consulte a aba de logs para o motivo de cada falha."
+            )
         else:
             self.var_progresso_txt.set(f"🎉 Todos os downloads foram concluídos com sucesso! ({sucessos}/{total})")
             if sys.platform == "win32" and ConfigManager.carregar().get("som_notificacao", True):
@@ -1799,6 +1824,8 @@ class AppConsultaFrotaGUI:
         self.col_chassi: str | None = None
         self.resultados_memoria: dict[int, dict] = {}
         self.indices_em_falha: list[int] = []
+        self._scrapers_ativos: list[FrotaScraperEngine] = []
+        self._thread_processamento: threading.Thread | None = None
 
         # Ordenação da Tabela
         self.coluna_ordenacao = ""
@@ -3065,7 +3092,16 @@ class AppConsultaFrotaGUI:
             args=(caminho, self.var_headless.get(), c_ipva, c_lic, c_multas, self.var_formato_exportacao.get(), indices_alvo, self.var_workers.get()),
             daemon=True
         )
+        self._thread_processamento = thread
         thread.start()
+
+    def _encerrar_navegadores_ativos(self):
+        """Encerra em definitivo todas as instâncias do Chrome abertas pelos workers."""
+        for sc in list(self._scrapers_ativos):
+            try:
+                sc.encerrar()
+            except Exception:
+                pass
 
     def _cancelar_processamento(self):
         if messagebox.askyesno("Confirmar Cancelamento", "Deseja realmente interromper as consultas ao concluir o veículo atual?"):
@@ -3092,8 +3128,8 @@ class AppConsultaFrotaGUI:
                 caminho_arquivo or self.caminho_arquivo.get(), pasta_destino
             )
             df_chk.to_excel(chk_path, index=False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Não foi possível gravar o checkpoint de recuperação: {e}")
 
     def _executar_raspagem_thread(
         self,
@@ -3124,6 +3160,7 @@ class AppConsultaFrotaGUI:
             )
 
         scrapers_ativos = []
+        self._scrapers_ativos = scrapers_ativos
         try:
             df = self.df_carregado.copy()
             total_geral = len(df)
@@ -3176,23 +3213,50 @@ class AppConsultaFrotaGUI:
                             if consultar_ipva:
                                 val_sefaz_ipva = "Placa Inválida"
                         else:
-                            if consultar_lic or consultar_multas:
-                                res_detran = scraper.consultar_detran(
-                                    placa, renavam, consultar_lic, consultar_multas, chassi=chassi
-                                )
-                                val_detran_lic = res_detran[0]
-                                if str(val_detran_lic).strip() in ["R$ 0,00", "0,00"]:
-                                    val_detran_lic = "PAGO"
-                                val_detran_multas = res_detran[1]
-                                multas_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
-                                multas_vencidas = getattr(res_detran, "multas_vencidas", "R$ 0,00")
-                                time.sleep(0.3)
+                            try:
+                                if consultar_lic or consultar_multas:
+                                    res_detran = scraper.consultar_detran(
+                                        placa, renavam, consultar_lic, consultar_multas, chassi=chassi
+                                    )
+                                    val_detran_lic = res_detran[0]
+                                    if str(val_detran_lic).strip() in ["R$ 0,00", "0,00"]:
+                                        val_detran_lic = "PAGO"
+                                    val_detran_multas = res_detran[1]
+                                    multas_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
+                                    multas_vencidas = getattr(res_detran, "multas_vencidas", "R$ 0,00")
+                                    time.sleep(0.3)
 
-                            if consultar_ipva:
-                                val_sefaz_ipva = scraper.consultar_sefaz_ipva(placa, renavam, chassi=chassi)
-                                if str(val_sefaz_ipva).strip() in ["R$ 0,00", "0,00"]:
-                                    val_sefaz_ipva = "PAGO"
-                                time.sleep(0.3)
+                                if consultar_ipva:
+                                    val_sefaz_ipva = scraper.consultar_sefaz_ipva(placa, renavam, chassi=chassi)
+                                    if str(val_sefaz_ipva).strip() in ["R$ 0,00", "0,00"]:
+                                        val_sefaz_ipva = "PAGO"
+                                    time.sleep(0.3)
+                            except Exception as exc_veiculo:
+                                if self.cancelar_solicitado:
+                                    break
+                                # Erro inesperado em um veículo não interrompe o restante do lote:
+                                # o veículo é marcado como falha (disponível em 'Reconsultar Falhas')
+                                logger.error(f"Erro inesperado ao consultar {placa} (Worker {worker_id + 1}): {exc_veiculo}", exc_info=True)
+                                self._adicionar_log(f"Erro inesperado ao consultar {placa}: {exc_veiculo}", nivel="ERRO")
+                                if consultar_lic and val_detran_lic == "-":
+                                    val_detran_lic = "Falha Detran"
+                                if consultar_multas and val_detran_multas == "-":
+                                    val_detran_multas = "Falha Detran"
+                                    multas_a_vencer = "Falha Detran"
+                                    multas_vencidas = "Falha Detran"
+                                if consultar_ipva and val_sefaz_ipva == "-":
+                                    val_sefaz_ipva = "Falha Sefaz"
+
+                        # Reconsulta parcial: tributos não selecionados mantêm o resultado já obtido
+                        anterior = self.resultados_memoria.get(idx, {})
+                        if not consultar_lic and "lic" in anterior:
+                            val_detran_lic = anterior["lic"]
+                        if not consultar_multas and "multas" in anterior:
+                            val_detran_multas = anterior["multas"]
+                            multas_a_vencer = anterior.get("multas_a_vencer", multas_a_vencer)
+                            multas_vencidas = anterior.get("multas_vencidas", multas_vencidas)
+                        if not consultar_ipva and "ipva" in anterior:
+                            val_sefaz_ipva = anterior["ipva"]
 
                         with lock_memoria:
                             self.resultados_memoria[idx] = {
@@ -3382,7 +3446,8 @@ class AppConsultaFrotaGUI:
 
         except Exception as e:
             logger.error(f"Erro durante o processamento da frota: {e}", exc_info=True)
-            self.root.after(0, lambda: messagebox.showerror("Erro de Processamento", f"Ocorreu uma falha no processamento:\n\n{e}"))
+            # Captura 'e' como argumento padrão: o Python apaga a variável ao sair do bloco except
+            self.root.after(0, lambda err=e: messagebox.showerror("Erro de Processamento", f"Ocorreu uma falha no processamento:\n\n{err}"))
             self.root.after(0, lambda: self.var_status.set("Erro durante o processamento. Verifique a aba de logs."))
             self.root.after(0, self._restaurar_botoes_apos_conclusao_ou_erro)
         finally:
@@ -3637,10 +3702,18 @@ class AppConsultaFrotaGUI:
             if not messagebox.askyesno("Encerrar", "Existe uma consulta em andamento. Deseja realmente interromper e fechar?"):
                 return
             self.cancelar_solicitado = True
+            self.is_pausado = False
+            # Fecha os navegadores antes de destruir a janela: as threads são daemon e,
+            # sem isso, chrome.exe/chromedriver.exe ficariam órfãos ao encerrar o processo
+            self._encerrar_navegadores_ativos()
         if self.status_orb:
             self.status_orb._parar_pulso()
         self._salvar_preferencias()
         self.root.destroy()
+        th = self._thread_processamento
+        if th and th.is_alive():
+            th.join(timeout=15)
+            self._encerrar_navegadores_ativos()
 
 
 def main():

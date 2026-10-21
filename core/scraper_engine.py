@@ -37,10 +37,10 @@ def obter_caminho_chromedriver() -> str | None:
         if _CHROMEDRIVER_PATH and os.path.exists(_CHROMEDRIVER_PATH):
             return _CHROMEDRIVER_PATH
 
-        user_home = os.path.expanduser("~")
+        # 1. ChromeDriver distribuído manualmente junto ao executável ou na pasta de trabalho.
+        # (Caminhos de cache fixos por versão foram removidos: ficam desatualizados a cada
+        # atualização do Chrome e causam falha de sessão por incompatibilidade de versão.)
         caminhos_conhecidos = [
-            os.path.join(user_home, r".cache\selenium\chromedriver\win64\155.0.8059.84\chromedriver.exe"),
-            os.path.join(user_home, r".wdm\drivers\chromedriver\win64\155.0.8059.84\chromedriver-win64\chromedriver.exe"),
             os.path.join(os.path.dirname(sys.executable), "chromedriver.exe"),
             os.path.join(os.getcwd(), "chromedriver.exe")
         ]
@@ -112,9 +112,12 @@ class FrotaScraperEngine:
         self.driver: ChromeDriver | None = None
         self.wait: WebDriverWait | None = None
         self.temp_user_data_dir: str | None = None
+        self.encerrado = False
 
     def iniciar(self):
         """Inicializa o WebDriver com configurações silenciosas e robustas."""
+        if self.encerrado:
+            raise RuntimeError("Motor de consulta encerrado: novas instâncias do navegador não são permitidas.")
         chrome_options = Options()
         if self.headless:
             chrome_options.add_argument("--headless=new")
@@ -167,6 +170,11 @@ class FrotaScraperEngine:
                 pass
             self.temp_user_data_dir = None
 
+    def encerrar(self):
+        """Encerra o navegador em definitivo (ex: ao fechar o aplicativo), bloqueando o auto-heal."""
+        self.encerrado = True
+        self.fechar()
+
     def reiniciar(self):
         """Auto-heal: reinicia a instância do navegador após crash ou travamento."""
         logger.warning("Auto-heal ativado: reiniciando instância do ChromeDriver...")
@@ -211,7 +219,7 @@ class FrotaScraperEngine:
         renavam_limpo = str(renavam).strip()
         chassi_limpo = sanitizar_chassi(chassi)
 
-        renavam_valido = bool(renavam_limpo) and renavam_limpo.isdigit() and int(renavam_limpo) > 0
+        renavam_valido = len(renavam_limpo) == 11 and renavam_limpo.isdigit() and int(renavam_limpo) > 0
         if not usar_chassi and not renavam_valido and chassi_limpo:
             usar_chassi = True
 
@@ -524,7 +532,7 @@ class FrotaScraperEngine:
         renavam_limpo = str(renavam).strip()
         chassi_limpo = sanitizar_chassi(chassi)
 
-        renavam_valido = bool(renavam_limpo) and renavam_limpo.isdigit() and int(renavam_limpo) > 0
+        renavam_valido = len(renavam_limpo) == 11 and renavam_limpo.isdigit() and int(renavam_limpo) > 0
         if not usar_apenas_chassi and not renavam_valido and chassi_limpo:
             usar_apenas_chassi = True
 
@@ -598,10 +606,19 @@ class FrotaScraperEngine:
             if not self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Débitos de IPVA não quitados')]"):
                 return "PAGO"
 
-            # 5. Extrai saldo em aberto
+            # 5. Extrai saldo em aberto ("Saldo a Pagar" de cada exercício com situação 'Em aberto')
             xpath_valor = "//td[contains(., 'Em aberto')]/preceding-sibling::td[contains(., 'R$')][1]"
-            el_valor = self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_valor)))
-            txt_ipva = el_valor.text.strip()
+            self.wait.until(EC.visibility_of_element_located((By.XPATH, xpath_valor)))
+            textos_ipva = [
+                el.text.strip() for el in self.driver.find_elements(By.XPATH, xpath_valor)
+                if el.is_displayed() and el.text.strip()
+            ]
+            if len(textos_ipva) > 1:
+                # Mais de um exercício em aberto: soma os saldos de todos os anos
+                txt_ipva = formatar_float_moeda(sum(formatar_moeda_float(t) for t in textos_ipva))
+                logger.info(f"Sefaz-CE: {placa_limpa} possui {len(textos_ipva)} exercícios de IPVA em aberto ({', '.join(textos_ipva)}).")
+            else:
+                txt_ipva = textos_ipva[0] if textos_ipva else ""
             if not txt_ipva or formatar_moeda_float(txt_ipva) == 0.0 or txt_ipva == "R$ 0,00":
                 return "PAGO"
             return txt_ipva

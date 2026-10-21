@@ -5,7 +5,9 @@ import os
 import logging
 from logging.handlers import RotatingFileHandler
 
-PASTA_LOGS = "logs"
+from core.config_manager import obter_diretorio_base
+
+PASTA_LOGS = os.path.join(obter_diretorio_base(), "logs")
 ARQUIVO_LOG = os.path.join(PASTA_LOGS, "automacao_frota.log")
 
 

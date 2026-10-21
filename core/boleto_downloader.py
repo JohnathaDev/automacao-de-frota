@@ -207,13 +207,21 @@ class FrotaBoletoDownloader:
             except Exception:
                 pass
 
-    def _capturar_boleto_ou_arquivo(self, destino_final: str, janela_principal: str, timeout_espera: int = 15) -> bool:
+    def _capturar_boleto_ou_arquivo(
+        self,
+        destino_final: str,
+        janela_principal: str,
+        timeout_espera: int = 15,
+        url_antes: str = ""
+    ) -> bool:
         """
         Captura o documento gerado:
         1. Tenta identificar se o arquivo foi baixado fisicamente na pasta de downloads.
         2. Caso tenha sido aberta uma página de impressão/extrato (ex: /gerar_boleto ou window.print()),
            salva o conteúdo exatamente como 'Salvar como PDF' via Chrome CDP.
         3. Restaura o foco na janela principal original.
+        A renderização via CDP só é aceita quando o boleto está em uma nova janela/aba ou em uma URL
+        diferente da página de consulta (url_antes), evitando salvar a própria tela do portal como boleto.
         """
         inicio = time.time()
 
@@ -224,9 +232,22 @@ class FrotaBoletoDownloader:
             time.sleep(0.3)
 
         todas_janelas = self.driver.window_handles
-        janela_boleto = todas_janelas[-1] if len(todas_janelas) > 1 else janela_principal
+        abriu_nova_janela = len(todas_janelas) > 1
+        janela_boleto = todas_janelas[-1] if abriu_nova_janela else janela_principal
         if janela_boleto != self.driver.current_window_handle:
             self.driver.switch_to.window(janela_boleto)
+
+        def pagina_e_documento_gerado() -> bool:
+            """True somente se o conteúdo em foco não é a página de consulta original."""
+            if abriu_nova_janela:
+                return True
+            try:
+                url_atual = self.driver.current_url
+            except Exception:
+                return False
+            if "gerar_boleto" in url_atual.lower():
+                return True
+            return bool(url_antes) and url_atual.split("#")[0] != url_antes.split("#")[0]
 
         # 2. Verifica se o Chrome já baixou o arquivo físico diretamente
         arquivo_baixado = self._aguardar_arquivo_baixado(timeout_segundos=2)
@@ -244,6 +265,10 @@ class FrotaBoletoDownloader:
                 return True
 
             try:
+                if not pagina_e_documento_gerado():
+                    time.sleep(0.5)
+                    continue
+
                 url_atual = self.driver.current_url.lower()
                 corpo = self.driver.page_source.lower()
 
@@ -265,8 +290,8 @@ class FrotaBoletoDownloader:
 
             time.sleep(0.5)
 
-        # 4. Fallback final via CDP caso haja qualquer conteúdo renderizado
-        if self._salvar_pagina_como_pdf(destino_final):
+        # 4. Fallback final via CDP caso haja conteúdo renderizado em uma janela/página de documento
+        if pagina_e_documento_gerado() and self._salvar_pagina_como_pdf(destino_final):
             self._fechar_janelas_extras(janela_principal)
             return True
 
@@ -293,7 +318,7 @@ class FrotaBoletoDownloader:
         renavam_limpo = str(renavam).strip()
         chassi_limpo = sanitizar_chassi(chassi)
 
-        renavam_valido = bool(renavam_limpo) and renavam_limpo.isdigit() and int(renavam_limpo) > 0
+        renavam_valido = len(renavam_limpo) == 11 and renavam_limpo.isdigit() and int(renavam_limpo) > 0
         if not usar_chassi and not renavam_valido and chassi_limpo:
             usar_chassi = True
 
@@ -382,10 +407,11 @@ class FrotaBoletoDownloader:
                 return False, "Botão de emissão de licenciamento não encontrado."
 
             btn_emitir = next((b for b in botoes_emitir if b.is_displayed()), botoes_emitir[0])
+            url_antes = self.driver.current_url
             self.driver.execute_script("arguments[0].click();", btn_emitir)
 
             # Captura via download direto ou 'Salvar como PDF' (CDP)
-            sucesso = self._capturar_boleto_ou_arquivo(destino_final, janela_principal, timeout_espera=14)
+            sucesso = self._capturar_boleto_ou_arquivo(destino_final, janela_principal, timeout_espera=14, url_antes=url_antes)
             if sucesso and os.path.exists(destino_final) and os.path.getsize(destino_final) > 1000:
                 logger.info(f"Boleto de Licenciamento salvo com sucesso: {destino_final}")
                 return True, destino_final
@@ -428,7 +454,7 @@ class FrotaBoletoDownloader:
         renavam_limpo = str(renavam).strip()
         chassi_limpo = sanitizar_chassi(chassi)
 
-        renavam_valido = bool(renavam_limpo) and renavam_limpo.isdigit() and int(renavam_limpo) > 0
+        renavam_valido = len(renavam_limpo) == 11 and renavam_limpo.isdigit() and int(renavam_limpo) > 0
         if not usar_apenas_chassi and not renavam_valido and chassi_limpo:
             usar_apenas_chassi = True
 
@@ -511,10 +537,11 @@ class FrotaBoletoDownloader:
             btn_imprimir = self.wait.until(EC.element_to_be_clickable((
                 By.XPATH, "//button[contains(., 'Imprimir DAE')]"
             )))
+            url_antes = self.driver.current_url
             self._clicar_seguro(btn_imprimir)
 
             # Captura via download direto ou 'Salvar como PDF' (CDP)
-            sucesso = self._capturar_boleto_ou_arquivo(destino_final, janela_principal, timeout_espera=14)
+            sucesso = self._capturar_boleto_ou_arquivo(destino_final, janela_principal, timeout_espera=14, url_antes=url_antes)
             if sucesso and os.path.exists(destino_final) and os.path.getsize(destino_final) > 1000:
                 logger.info(f"DAE de IPVA salvo com sucesso: {destino_final}")
                 return True, destino_final

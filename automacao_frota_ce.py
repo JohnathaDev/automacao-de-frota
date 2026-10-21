@@ -23,9 +23,7 @@ from core import (
     PADRAO_PLACA,
     formatar_moeda_float,
     formatar_float_moeda,
-    calcular_total_a_pagar_veiculo,
-    gerar_nome_base_resultado,
-    obter_caminhos_arquivos_saida
+    calcular_total_a_pagar_veiculo
 )
 
 HEADLESS_MODE = True
@@ -69,7 +67,12 @@ def processar_frota(
     print(" AUTOMAÇÃO DE FROTA CE (v4.1) - DETRAN & SEFAZ")
     print("=" * 70)
 
-    criar_planilha_entrada(caminho_entrada)
+    if not os.path.exists(caminho_entrada):
+        if os.path.abspath(caminho_entrada) != os.path.abspath(ARQUIVO_ENTRADA):
+            # Nunca gera dados fictícios no lugar de uma planilha informada pelo usuário
+            print(f"[ERRO] Planilha não encontrada: '{caminho_entrada}'")
+            return None
+        criar_planilha_entrada(caminho_entrada)
 
     # 1. Carregamento resiliente com higienização e zfill(11)
     print(f"\n[1/4] Carregando e validando arquivo: '{caminho_entrada}'...")
@@ -126,22 +129,33 @@ def processar_frota(
                     val_ipva = "Placa Inválida"
                 print(f"    -> [AVISO] Placa fora do padrão Mercosul/Tradicional: {placa}")
             else:
-                if consultar_lic or consultar_multas:
-                    res_detran = scraper.consultar_detran(placa, renavam, consultar_lic, consultar_multas, chassi=chassi)
-                    val_lic = res_detran[0]
-                    if str(val_lic).strip() in ["R$ 0,00", "0,00"]:
-                        val_lic = "PAGO"
-                    val_multas = res_detran[1]
-                    m_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
-                    print(f"    -> Detran-CE: Licenciamento={val_lic} | Multas={val_multas} (A vencer: {m_a_vencer})")
-                    time.sleep(0.4)
+                try:
+                    if consultar_lic or consultar_multas:
+                        res_detran = scraper.consultar_detran(placa, renavam, consultar_lic, consultar_multas, chassi=chassi)
+                        val_lic = res_detran[0]
+                        if str(val_lic).strip() in ["R$ 0,00", "0,00"]:
+                            val_lic = "PAGO"
+                        val_multas = res_detran[1]
+                        m_a_vencer = getattr(res_detran, "multas_a_vencer", "R$ 0,00")
+                        print(f"    -> Detran-CE: Licenciamento={val_lic} | Multas={val_multas} (A vencer: {m_a_vencer})")
+                        time.sleep(0.4)
 
-                if consultar_ipva:
-                    val_ipva = scraper.consultar_sefaz_ipva(placa, renavam, chassi=chassi)
-                    if str(val_ipva).strip() in ["R$ 0,00", "0,00"]:
-                        val_ipva = "PAGO"
-                    print(f"    -> Sefaz-CE:  IPVA em aberto={val_ipva}")
-                    time.sleep(0.4)
+                    if consultar_ipva:
+                        val_ipva = scraper.consultar_sefaz_ipva(placa, renavam, chassi=chassi)
+                        if str(val_ipva).strip() in ["R$ 0,00", "0,00"]:
+                            val_ipva = "PAGO"
+                        print(f"    -> Sefaz-CE:  IPVA em aberto={val_ipva}")
+                        time.sleep(0.4)
+                except Exception as e_veiculo:
+                    # Erro inesperado em um veículo não interrompe o restante do lote
+                    print(f"    -> [ERRO] Falha inesperada ao consultar {placa}: {e_veiculo}")
+                    if consultar_lic and val_lic == "-":
+                        val_lic = "Falha Detran"
+                    if consultar_multas and val_multas == "-":
+                        val_multas = "Falha Detran"
+                        m_a_vencer = "Falha Detran"
+                    if consultar_ipva and val_ipva == "-":
+                        val_ipva = "Falha Sefaz"
 
             licenciamentos.append(val_lic)
             ipvas.append(val_ipva)
