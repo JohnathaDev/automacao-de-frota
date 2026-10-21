@@ -1,13 +1,26 @@
-# 🚗 Automação de Frota - Detran/Sefaz CE (Versão 4.1)
+# 🚗 Automação de Frota - Detran/Sefaz CE (Versão 4.2)
 
 Sistema corporativo de web scraping e automação veicular com Interface Gráfica nativa (GUI Comercial — *Fleet Command Pro*) e CLI para consulta em lote de débitos de **Licenciamento (Detran-CE)**, **IPVA (Sefaz-CE)** e **Multas (Detran-CE)**, além de **emissão automática de boletos/DAEs**, **Business Intelligence (BI) integrado** e **comparativo automático de baixas de débitos**.
 
 ---
 
-## 🌟 Funcionalidades da Versão 4.1
+## 🆕 Novidades da Versão 4.2 (Confiabilidade)
+
+- **Comparativo sem falsos pagamentos:** tributos não consultados em uma das auditorias (ex: IPVA desmarcado) ou Licenciamento atual com Restrição não são mais registrados como quitados no PDF de BI.
+- **Reconsulta parcial segura:** ao reconsultar veículos com apenas alguns débitos marcados, os demais tributos mantêm o resultado já obtido.
+- **Boletos confiáveis:** a página do portal nunca é salva como se fosse o boleto; o PDF só é aceito em nova janela/aba ou URL de documento. Retentativas limitadas a 3 rodadas, com aviso listando os boletos não emitidos.
+- **IPVA de múltiplos exercícios:** soma todos os anos em aberto na Sefaz-CE.
+- **Vencimento do DAE nunca retroativo** (consultas feitas no fim de semana após o último dia útil do mês).
+- **Lote resiliente:** erro inesperado em um veículo não interrompe os demais (marcado como falha para reconsulta).
+- **Encerramento limpo:** fechar a janela durante a consulta encerra os navegadores Chrome abertos.
+- **Fallback por Chassi** acionado também quando o RENAVAM não possui 11 dígitos.
+- **`config.json` e `logs/`** sempre na pasta do aplicativo (independente do diretório de execução).
+- Correções: alerta de erro da GUI, console do terminal preservado ao executar pelo CMD, CLI não gera planilha fictícia para caminho inexistente, remoção de caminhos fixos de versão do ChromeDriver.
+
+## 🌟 Funcionalidades
 
 - **Arquitetura Modular em Camadas (`core/`):** Estrutura limpa e escalável com módulos desacoplados para raspagem, processamento de dados, emissão de boletos, exportação de relatórios, persistência de preferências e logging estruturado.
-- **Comparativo Automático de Evolução e Baixas de Débitos (Novo v4.1):** Antes de sobrescrever a planilha anterior de uma frota no disco, o sistema carrega o histórico e compara cada veículo, identificando no PDF de BI, nos logs e na GUI todas as baixas e pagamentos realizados no período (ex.: *quitação de IPVA nominal por placa, quitação de Licenciamento, valor abatido em multas e regularização de restrições*).
+- **Comparativo Automático de Evolução e Baixas de Débitos (v4.1+):** Antes de sobrescrever a planilha anterior de uma frota no disco, o sistema carrega o histórico e compara cada veículo, identificando no PDF de BI, nos logs e na GUI todas as baixas e pagamentos realizados no período (ex.: *quitação de IPVA nominal por placa, quitação de Licenciamento, valor abatido em multas e regularização de restrições*).
 - **Painel Analítico de BI Integrado (Top 10):** Aba dedicada na interface gráfica com **Gráfico de Rosca (Donut Chart)** de composição tributária, **Saúde e Regularidade da Frota** e **Ranking Top 10 Veículos de Maior Impacto Financeiro**, com layout anti-colisão em tempo real.
 - **Duplo Relatório PDF Executivo (Relatório Geral + Relatório de BI):** Além da planilha Excel (`.xlsx`) e do relatório consolidado (`.pdf`), gera automaticamente um **2º PDF Executivo de BI (`*_BI.pdf`)** com gráficos vetoriais, KPIs, comparativo de baixas de débitos, Top 10 veículos mais críticos e consolidação por Proprietário/Centro de Custo.
 - **Raio-X Executivo do Veículo:** Duplo clique em qualquer veículo na tabela abre o detalhamento individual completo com botão para copiar resumo formatado para WhatsApp ou E-mail.
@@ -27,7 +40,7 @@ Sistema corporativo de web scraping e automação veicular com Interface Gráfic
 
 ```text
 automação-de-frota/
-├── automacao_frota_gui.py    # Interface Gráfica Principal v4.0 (Fleet Command Pro)
+├── automacao_frota_gui.py    # Interface Gráfica Principal v4.2 (Fleet Command Pro)
 ├── automacao_frota_gui.pyw   # Lançador sem console no Windows
 ├── automacao_frota_ce.py     # Execução via Linha de Comando (CLI)
 ├── core/                     # Pacote central de lógica de negócio

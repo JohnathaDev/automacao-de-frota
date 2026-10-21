@@ -1,6 +1,6 @@
 """
 ========================================================================================
-Aplicativo GUI Principal (v4.1): Consulta de Frota - Detran/Sefaz CE
+Aplicativo GUI Principal (v4.2): Consulta de Frota - Detran/Sefaz CE
 ========================================================================================
 Interface Gráfica Corporativa & Comercial (SaaS / Fintech B2B Edition):
 - Barra de título nativa do Windows sincronizada com Modo Claro / Noturno (DWM API).
@@ -1769,7 +1769,7 @@ class JanelaDownloadBoletos(tk.Toplevel):
 
 
 # ======================================================================================
-# INTERFACE PRINCIPAL COMERCIAL (V4.1)
+# INTERFACE PRINCIPAL COMERCIAL (V4.2)
 # ======================================================================================
 
 class AppConsultaFrotaGUI:
@@ -1777,7 +1777,7 @@ class AppConsultaFrotaGUI:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Fleet Command Pro • Auditoria & Inteligência de Frota CE (v4.1)")
+        self.root.title("Fleet Command Pro • Auditoria & Inteligência de Frota CE (v4.2)")
         self._ajustar_geometria_responsiva()
 
         self.cfg = ConfigManager.carregar()
@@ -2137,7 +2137,7 @@ class AppConsultaFrotaGUI:
 
         lbl_badge_v4 = tk.Label(
             frame_marca,
-            text="B2B EDITION v4.1",
+            text="B2B EDITION v4.2",
             font=("Segoe UI", 7, "bold"),
             bg="#059669",
             fg="#FFFFFF",

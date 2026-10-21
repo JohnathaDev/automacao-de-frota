@@ -1,8 +1,8 @@
 """
 ========================================================================================
-Automação de Consulta de Débitos Veiculares - Ceará (Detran-CE & Sefaz-CE) [CLI v4.1]
+Automação de Consulta de Débitos Veiculares - Ceará (Detran-CE & Sefaz-CE) [CLI v4.2]
 ========================================================================================
-Módulo de linha de comando que consome a arquitetura unificada de raspagem (v4.1):
+Módulo de linha de comando que consome a arquitetura unificada de raspagem (v4.2):
 - Leitura resiliente com Pandas, zfill(11) no RENAVAM e validação de placas.
 - Consultas a Licenciamento, IPVA e Multas sem falsos negativos.
 - Salvamento parcial/checkpoint em caso de interrupção.
@@ -64,7 +64,7 @@ def processar_frota(
 ) -> pd.DataFrame | None:
     """Executa a rotina de automação via linha de comando."""
     print("=" * 70)
-    print(" AUTOMAÇÃO DE FROTA CE (v4.1) - DETRAN & SEFAZ")
+    print(" AUTOMAÇÃO DE FROTA CE (v4.2) - DETRAN & SEFAZ")
     print("=" * 70)
 
     if not os.path.exists(caminho_entrada):
